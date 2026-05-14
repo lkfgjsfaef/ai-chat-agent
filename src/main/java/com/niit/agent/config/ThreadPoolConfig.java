@@ -16,8 +16,8 @@ public class ThreadPoolConfig {
     @Bean
     public ExecutorService chatExecutor() {
         return new ThreadPoolExecutor(
-                4,
                 8,
+                16,
                 60L,
                 TimeUnit.SECONDS,
                 new LinkedBlockingQueue<>(256),
@@ -26,10 +26,22 @@ public class ThreadPoolConfig {
     }
 
     @Bean
+    public ExecutorService contextExecutor() {
+        return new ThreadPoolExecutor(
+                6,
+                12,
+                60L,
+                TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(128),
+                new ThreadPoolExecutor.CallerRunsPolicy()
+        );
+    }
+
+    @Bean
     public ExecutorService ragExecutor() {
         return new ThreadPoolExecutor(
-                4,
-                8,
+                6,
+                12,
                 60L,
                 TimeUnit.SECONDS,
                 new LinkedBlockingQueue<>(128),

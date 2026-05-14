@@ -36,6 +36,7 @@ public class ChatController {
     private final AppSkillService appSkillService;
     private final ObjectMapper objectMapper;
     private final ExecutorService chatExecutor;
+    private final ExecutorService contextExecutor;
     private final ScheduledExecutorService heartbeatExecutor;
 
     public ChatController(
@@ -48,6 +49,7 @@ public class ChatController {
             AppSkillService appSkillService,
             ObjectMapper objectMapper,
             @Qualifier("chatExecutor") ExecutorService chatExecutor,
+            @Qualifier("contextExecutor") ExecutorService contextExecutor,
             @Qualifier("heartbeatExecutor") ScheduledExecutorService heartbeatExecutor) {
         this.aiModelRouterService = aiModelRouterService;
         this.memoryService = memoryService;
@@ -58,6 +60,7 @@ public class ChatController {
         this.appSkillService = appSkillService;
         this.objectMapper = objectMapper;
         this.chatExecutor = chatExecutor;
+        this.contextExecutor = contextExecutor;
         this.heartbeatExecutor = heartbeatExecutor;
     }
 
@@ -148,8 +151,9 @@ public class ChatController {
             long startTime = System.currentTimeMillis();
             StringBuilder fullResponse = new StringBuilder();
             try {
+                long contextStart = System.currentTimeMillis();
                 List<Map<String, Object>> context = memoryService.buildContext(sessionId, effectiveSkillId);
-                log.info("会话[{}]上下文消息数: {}", sessionId, context.size());
+                log.info("会话[{}]上下文构建完成, 消息数: {}, 耗时: {}ms", sessionId, context.size(), System.currentTimeMillis() - contextStart);
                 var disposable = aiModelRouterService.streamChat(modelName, context,
                                 event -> emitQueueStatus(emitter, event))
                         .doOnNext(chunk -> {
@@ -215,7 +219,7 @@ public class ChatController {
                 log.error("创建流式调用异常", e);
                 emitter.completeWithError(e);
             }
-        }, chatExecutor);
+        }, contextExecutor);
     }
 
     private void sendError(SseEmitter emitter, String message) {

@@ -71,7 +71,9 @@ public class MemoryServiceImpl implements MemoryService {
     private final AtomicLong ragCacheHitCount = new AtomicLong();
     private final Deque<RagRuntimeEvent> recentRagEvents = new ConcurrentLinkedDeque<>();
     private final ConcurrentHashMap<Long, TimedAttribution> pendingChunkAttributions = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Integer, CachedExpansion> expansionCache = new ConcurrentHashMap<>();
     private static final long RAG_METRIC_WINDOW_5M_MS = TimeUnit.MINUTES.toMillis(5);
+    private static final long EXPANSION_CACHE_TTL_MS = TimeUnit.MINUTES.toMillis(3);
 
     @Autowired(required = false)
     private RerankService rerankService;
@@ -728,7 +730,8 @@ public class MemoryServiceImpl implements MemoryService {
         addQueryVariant(queries, latestUserQuestion);
         addQueryVariant(queries, retrievalQuery);
         if (ragQueryExpansionEnabled) {
-            for (String expandedQuery : expandQueryVariantsByLlm(latestUserQuestion, recentMessages, summary)) {
+            List<String> expandedQueries = getCachedOrFreshExpansion(latestUserQuestion, recentMessages, summary);
+            for (String expandedQuery : expandedQueries) {
                 addQueryVariant(queries, expandedQuery);
                 if (queries.size() >= Math.max(2, ragQueryExpansionVariants + 2)) {
                     break;
@@ -738,6 +741,16 @@ public class MemoryServiceImpl implements MemoryService {
         return queries.stream()
                 .limit(Math.max(2, ragQueryExpansionVariants + 2L))
                 .toList();
+    }
+
+    private List<String> getCachedOrFreshExpansion(String latestUserQuestion, List<ChatMessage> recentMessages, ChatSummary summary) {
+        int cacheKey = Objects.hash(latestUserQuestion);
+        CachedExpansion cached = expansionCache.get(cacheKey);
+        if (cached != null && (System.currentTimeMillis() - cached.createdAtMs) < EXPANSION_CACHE_TTL_MS) {
+            log.debug("命中查询扩展缓存: question={}, queries={}", RetrievalUtil.summarizeQuestion(latestUserQuestion), cached.queries());
+            return cached.queries();
+        }
+        return expandQueryVariantsByLlm(latestUserQuestion, recentMessages, summary);
     }
 
     private void addQueryVariant(LinkedHashSet<String> queries, String query) {
@@ -853,29 +866,41 @@ public class MemoryServiceImpl implements MemoryService {
             return new RagDecision(true, "scoped_knowledge_follow_up");
         }
 
-        // LLM fallback for ambiguous cases
+        // LLM fallback for ambiguous cases — 合并意图判断+查询扩展为一次调用
         if (ragIntentLlmFallbackEnabled && latestUserQuestion.length() >= 8 && knowledgeScopeStats.hasAnyKnowledge()) {
             try {
-                boolean llmResult = classifyIntentByLlm(latestUserQuestion);
-                if (llmResult) {
+                CombinedIntentResult combined = combinedIntentAndExpansion(latestUserQuestion);
+                if (combined.needsKnowledge()) {
+                    if (!combined.expandedQueries().isEmpty()) {
+                        int cacheKey = Objects.hash(latestUserQuestion);
+                        expansionCache.put(cacheKey, new CachedExpansion(combined.expandedQueries(), System.currentTimeMillis()));
+                    }
                     return new RagDecision(true, "llm_fallback");
                 }
             } catch (Exception e) {
-                log.debug("LLM意图分类失败，回退到规则判断: {}", e.getMessage());
+                log.debug("合并意图+扩展调用失败，回退到规则判断: {}", e.getMessage());
             }
         }
 
         return new RagDecision(false, "non_knowledge_intent");
     }
 
-    private boolean classifyIntentByLlm(String question) {
+    private CombinedIntentResult combinedIntentAndExpansion(String question) {
         Map<String, Object> sysMsg = new HashMap<>();
         sysMsg.put("role", "system");
-        sysMsg.put("content", "你是一个意图分类器。判断用户问题是否需要检索知识库。只需要回答 YES 或 NO，不要解释。");
+        sysMsg.put("content", """
+            你是一个知识库检索助手，请完成两项任务：
+            1. 判断用户问题是否需要检索知识库来获取准确答案
+            2. 如果需要检索，输出3-5个适合检索的不同表达（覆盖口语化、书面化、故障描述、操作描述等角度）
+
+            输出格式（严格遵守）：
+            第一行：INTENT: YES 或 INTENT: NO
+            如果需要检索，后续每行一个查询改写（不要编号，不要解释）
+            如果不需要检索，只输出 INTENT: NO，不要输出其他内容""");
 
         Map<String, Object> userMsg = new HashMap<>();
         userMsg.put("role", "user");
-        userMsg.put("content", "问题：" + question + "\n\n该问题是否需要查询知识库（文档、规范、配置等）来获取准确答案？回答 YES 或 NO：");
+        userMsg.put("content", "问题：" + question);
 
         try {
             List<String> chunks = aiModelRouterService.streamChat(
@@ -884,13 +909,38 @@ public class MemoryServiceImpl implements MemoryService {
                             AiModelRouterService.QueueStatusListener.NO_OP,
                             AiModelRouterService.ChatOptions.AUXILIARY_NO_TOOLS)
                     .collectList()
-                    .block(Duration.ofSeconds(5));
-            String response = chunks == null ? "" : String.join("", chunks).trim().toUpperCase(Locale.ROOT);
-            return response.contains("YES") && !response.contains("NO");
+                    .block(Duration.ofSeconds(8));
+            String response = chunks == null ? "" : String.join("", chunks).trim();
+            return parseCombinedResult(response);
         } catch (Exception e) {
-            log.debug("LLM意图分类调用失败: {}", e.getMessage());
-            return false;
+            log.debug("合并意图+扩展调用失败: {}", e.getMessage());
+            return new CombinedIntentResult(false, List.of());
         }
+    }
+
+    private CombinedIntentResult parseCombinedResult(String response) {
+        if (response == null || response.isBlank()) {
+            return new CombinedIntentResult(false, List.of());
+        }
+
+        String[] lines = response.split("\\n");
+        boolean needsKnowledge = false;
+        List<String> queries = new ArrayList<>();
+
+        for (String line : lines) {
+            String trimmed = line.trim();
+            if (trimmed.isEmpty()) continue;
+            if (trimmed.toUpperCase(Locale.ROOT).startsWith("INTENT:")) {
+                needsKnowledge = trimmed.toUpperCase(Locale.ROOT).contains("YES");
+            } else if (needsKnowledge && !trimmed.startsWith("INTENT")) {
+                String cleaned = RetrievalUtil.sanitizeQueryVariant(trimmed);
+                if (!cleaned.isEmpty()) {
+                    queries.add(cleaned);
+                }
+            }
+        }
+
+        return new CombinedIntentResult(needsKnowledge, queries);
     }
 
     private KnowledgeScopeStats getKnowledgeScopeStats(ChatSession session) {
@@ -1311,4 +1361,8 @@ public class MemoryServiceImpl implements MemoryService {
             return sessionCount + ":" + userCount + ":" + globalCount;
         }
     }
+
+    private record CombinedIntentResult(boolean needsKnowledge, List<String> expandedQueries) {}
+
+    private record CachedExpansion(List<String> queries, long createdAtMs) {}
 }
