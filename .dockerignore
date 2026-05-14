@@ -1,0 +1,15 @@
+target/
+.git/
+.gitignore
+.gitattributes
+.idea/
+.vscode/
+.trae/
+*.iml
+node_modules/
+frontend/
+uploads/
+.claude/
+*.md
+HELP.md
+PROJECT_DOCUMENTATION.md

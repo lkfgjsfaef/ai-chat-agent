@@ -1,0 +1,137 @@
+server:
+  port: 8080
+  compression:
+    enabled: true
+    mime-types: application/json,text/html,text/xml,text/plain,text/css,text/javascript,application/javascript
+    min-response-size: 1024
+
+spring:
+  main:
+    web-application-type: servlet
+    allow-bean-definition-overriding: true
+  autoconfigure:
+    exclude: org.springframework.ai.autoconfigure.vectorstore.redis.RedisVectorStoreAutoConfiguration
+  application:
+    name: ai-chat
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
+  profiles:
+    active: dev
+
+mybatis-plus:
+  mapper-locations: classpath:mapper/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    db-config:
+      id-type: auto
+
+ai:
+  default-model: glm-4.7
+  router:
+    failure-threshold: 2
+    circuit-open-seconds: 60
+    circuit:
+      failure-rate-threshold: 50
+      sliding-window-size: 10
+      permitted-half-open-calls: 2
+    distributed-key-prefix: ai:model:gate
+    max-concurrent-calls: 6
+    queue-capacity: 24
+    queue-timeout-ms: 12000
+    aux-max-concurrent-calls: 2
+    aux-queue-capacity: 8
+    aux-queue-timeout-ms: 3000
+  rag:
+    observability:
+      enabled: true
+    cache:
+      enabled: true
+      ttl-seconds: 120
+    intent:
+      enabled: true
+      llm-fallback:
+        enabled: true
+    soft-fallback:
+      enabled: true
+    vector-search-top-k: 20
+    chunk-attribution-ttl-minutes: 5
+    query-expansion:
+      enabled: true
+      variants: 4
+      model: glm-4.5-air
+      timeout-seconds: 15
+    scope:
+      session-quota: 4
+      user-quota: 3
+      global-quota: 2
+    vector-quota: 6
+    keyword-quota: 6
+    top-k: 4
+    min-score: 0.1
+  context:
+    max-rounds: 8
+    max-length: 4000
+  summary:
+    enabled: true
+    model: glm-4.5-air
+    trigger-tokens: 3000
+    batch-size: 20
+    min-new-messages: 6
+  metrics-history:
+    enabled: true
+    snapshot-interval-ms: 10000
+    max-points: 720
+    ttl-hours: 24
+  health:
+    queue-wait-warning-ms: 3000
+    queue-wait-critical-ms: 8000
+    queue-usage-warning: 0.6
+    queue-usage-critical: 0.9
+    model-failure-warning: 1
+    model-failure-critical: 3
+    rag-hit-warning: 0.3
+    rag-hit-critical: 0.15
+    rag-error-warning: 1
+    rag-error-critical: 3
+
+  tools:
+    web-search:
+      enabled: false
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: method
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: when-authorized
+
+logging:
+  level:
+    com.niit.agent: debug
+
+rate-limit:
+  default:
+    capacity: 60
+    window-seconds: 60
+  stream:
+    capacity: 20
+    window-seconds: 60
+  upload:
+    capacity: 10
+    window-seconds: 60
+  auth:
+    capacity: 10
+    window-seconds: 60

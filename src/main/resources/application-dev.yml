@@ -1,0 +1,48 @@
+# ============================================
+# 开发环境配置（含安全默认值，仅用于本地开发）
+# 生产环境请使用 application-prod.yml
+# ============================================
+
+spring:
+  ai:
+    zhipuai:
+      api-key: ${ZHIPU_API_KEY:b54f75e62d5345f099aa51764019a92e.ET6EQT55100IcCM0}
+    vectorstore:
+      redis:
+        uri: redis://:${REDIS_PASSWORD:123456}@${REDIS_HOST:localhost}:6379
+        index: vector_index
+        prefix: "vector:"
+        initialize-schema: true
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:3306/ai_chat?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: ${MYSQL_USER:root}
+    password: ${MYSQL_PASSWORD:123456}
+    hikari:
+      max-lifetime: 25200000
+      validation-timeout: 1000
+      connection-test-query: SELECT 1
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      password: ${REDIS_PASSWORD:123456}
+      port: 6379
+      database: 3
+      timeout: 5000ms
+
+jwt:
+  secret: ${JWT_SECRET:ai-chat-dev-secret-change-in-production}
+  expiration: 86400000
+
+app:
+  cors:
+    allowed-origins: http://localhost:5173
+
+mybatis-plus:
+  configuration:
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+
+ai:
+  tools:
+    web-search:
+      enabled: false

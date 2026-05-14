@@ -1,0 +1,48 @@
+# ============================================
+# 生产环境配置（所有敏感信息通过环境变量注入）
+# 启动方式: java -jar app.jar --spring.profiles.active=prod
+# 或: docker-compose up
+# ============================================
+
+spring:
+  ai:
+    zhipuai:
+      api-key: ${ZHIPU_API_KEY}
+    vectorstore:
+      redis:
+        uri: redis://:${REDIS_PASSWORD}@${REDIS_HOST}:6379
+        index: vector_index
+        prefix: "vector:"
+        initialize-schema: true
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://${MYSQL_HOST}:3306/ai_chat?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: ${MYSQL_USER}
+    password: ${MYSQL_PASSWORD}
+    hikari:
+      max-lifetime: 25200000
+      validation-timeout: 1000
+      connection-test-query: SELECT 1
+  data:
+    redis:
+      host: ${REDIS_HOST}
+      password: ${REDIS_PASSWORD}
+      port: 6379
+      database: 3
+      timeout: 5000ms
+
+jwt:
+  secret: ${JWT_SECRET}
+  expiration: 86400000
+
+app:
+  cors:
+    allowed-origins: ${CORS_ORIGINS}
+
+mybatis-plus:
+  configuration:
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+
+logging:
+  level:
+    com.niit.agent: info
