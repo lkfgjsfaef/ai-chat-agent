@@ -153,11 +153,19 @@ public class ChatController {
             try {
                 long contextStart = System.currentTimeMillis();
                 List<Map<String, Object>> context = memoryService.buildContext(sessionId, effectiveSkillId);
-                log.info("会话[{}]上下文构建完成, 消息数: {}, 耗时: {}ms", sessionId, context.size(), System.currentTimeMillis() - contextStart);
+                long contextTime = System.currentTimeMillis() - contextStart;
+                log.info("会话[{}]上下文构建完成, 消息数: {}, 耗时: {}ms", sessionId, context.size(), contextTime);
+                long modelStart = System.currentTimeMillis();
+                boolean[] firstToken = {true};
                 var disposable = aiModelRouterService.streamChat(modelName, context,
                                 event -> emitQueueStatus(emitter, event))
                         .doOnNext(chunk -> {
                             fullResponse.append(chunk);
+                            if (firstToken[0]) {
+                                long ttft = System.currentTimeMillis() - modelStart;
+                                log.info("会话[{}]首Token到达, TTFT: {}ms", sessionId, ttft);
+                                firstToken[0] = false;
+                            }
                             try {
                                 emitter.send(SseEmitter.event().data(chunk));
                             } catch (IllegalStateException | IOException e) {
@@ -168,10 +176,11 @@ public class ChatController {
                         .doOnComplete(() -> {
                             if (heartbeat != null) heartbeat.cancel(true);
                             try {
+                                long modelTime = System.currentTimeMillis() - modelStart;
                                 memoryService.saveAssistantMessage(sessionId, fullResponse.toString());
                                 memoryService.triggerSummaryIfNeeded(sessionId);
                                 cacheService.evictMessages(sessionId);
-                                
+
                                 Object userIdObj = request.getAttribute("userId");
                                 if (userIdObj != null) {
                                     int promptTokens = tokenService.countContextTokens(context);
@@ -180,11 +189,12 @@ public class ChatController {
                                     userService.incrementTokenUsage(Long.parseLong(userIdObj.toString()), totalTokens);
                                     log.debug("Tokens 消耗: Prompt={}, Completion={}, Total={}", promptTokens, completionTokens, totalTokens);
                                 }
-                                
+
                                 emitter.send(SseEmitter.event().data("[DONE]"));
                                 emitter.complete();
-                                long costTime = System.currentTimeMillis() - startTime;
-                                log.info("会话[{}]{}回答完成，长度: {}，耗时: {}ms", sessionId, actionName, fullResponse.length(), costTime);
+                                long totalTime = System.currentTimeMillis() - startTime;
+                                log.info("会话[{}]{}回答完成, 上下文: {}ms, 模型调用: {}ms, 总耗时: {}ms, 长度: {}",
+                                        sessionId, actionName, contextTime, modelTime, totalTime, fullResponse.length());
                             } catch (Exception e) {
                                 log.error("{}完成处理异常: {}", actionName, e.getMessage());
                                 sendError(emitter, actionName + "保存或统计时发生错误");

@@ -190,20 +190,23 @@ public class AiModelRouterServiceImpl implements AiModelRouterService {
         }
 
         log.info("尝试使用模型: {}", currentModelName);
+        long modelCallStart = System.currentTimeMillis();
         return model.streamChat(messages, currentModelName, new AiModel.ChatOptions(options.toolsEnabled()))
                 .transformDeferred(CircuitBreakerOperator.of(circuitBreaker))
                 .doOnComplete(() -> {
+                    long elapsed = System.currentTimeMillis() - modelCallStart;
                     recordSuccess(currentModelName);
-                    log.info("模型[{}]响应完成", currentModelName);
+                    log.info("模型[{}]响应完成, 耗时: {}ms", currentModelName, elapsed);
                 })
                 .onErrorResume(ex -> {
+                    long elapsed = System.currentTimeMillis() - modelCallStart;
                     if (ex instanceof CallNotPermittedException) {
-                        recordRuntimeEvent("circuit_call_rejected", currentModelName, 0);
-                        log.warn("模型[{}]被标准熔断器拒绝，准备降级到下一个模型", currentModelName);
+                        recordRuntimeEvent("circuit_call_rejected", currentModelName, elapsed);
+                        log.warn("模型[{}]被标准熔断器拒绝，准备降级到下一个模型 (耗时: {}ms)", currentModelName, elapsed);
                         return tryModelChain(fallbackChain, messages, index + 1, options);
                     }
                     recordFailure(currentModelName, ex);
-                    log.warn("模型[{}]调用失败，准备降级到下一个模型: {}", currentModelName, ex.getMessage());
+                    log.warn("模型[{}]调用失败，准备降级到下一个模型: {} (耗时: {}ms)", currentModelName, ex.getMessage(), elapsed);
                     return tryModelChain(fallbackChain, messages, index + 1, options);
                 });
     }
