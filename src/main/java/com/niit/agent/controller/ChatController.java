@@ -157,18 +157,34 @@ public class ChatController {
                 log.info("会话[{}]上下文构建完成, 消息数: {}, 耗时: {}ms", sessionId, context.size(), contextTime);
                 long modelStart = System.currentTimeMillis();
                 boolean[] firstToken = {true};
+                StringBuilder reasoningBuilder = new StringBuilder();
                 var disposable = aiModelRouterService.streamChat(modelName, context,
                                 event -> emitQueueStatus(emitter, event),
                                 buildChatOptions(context))
                         .doOnNext(chunk -> {
-                            fullResponse.append(chunk);
+                            String type = "C";
+                            String text = chunk;
+                            if (chunk.startsWith("R")) {
+                                type = "R";
+                                text = chunk.substring(1);
+                                reasoningBuilder.append(text);
+                            } else if (chunk.startsWith("C")) {
+                                text = chunk.substring(1);
+                            }
+                            if ("C".equals(type)) {
+                                fullResponse.append(text);
+                            }
                             if (firstToken[0]) {
                                 long ttft = System.currentTimeMillis() - modelStart;
-                                log.info("会话[{}]首Token到达, TTFT: {}ms", sessionId, ttft);
+                                log.info("会话[{}]首Token到达, TTFT: {}ms, type={}", sessionId, ttft, type);
                                 firstToken[0] = false;
                             }
                             try {
-                                emitter.send(SseEmitter.event().data(chunk));
+                                if ("R".equals(type)) {
+                                    emitter.send(SseEmitter.event().name("reasoning").data(text));
+                                } else {
+                                    emitter.send(SseEmitter.event().data(text));
+                                }
                             } catch (IllegalStateException | IOException e) {
                                 log.debug("SSE发送被中断 (可能前端已断开): {}", e.getMessage());
                                 throw new RuntimeException("CLIENT_DISCONNECTED", e);
@@ -178,7 +194,8 @@ public class ChatController {
                             if (heartbeat != null) heartbeat.cancel(true);
                             try {
                                 long modelTime = System.currentTimeMillis() - modelStart;
-                                memoryService.saveAssistantMessage(sessionId, fullResponse.toString());
+                                String reply = !fullResponse.isEmpty() ? fullResponse.toString() : reasoningBuilder.toString();
+                                memoryService.saveAssistantMessage(sessionId, reply);
                                 memoryService.triggerSummaryIfNeeded(sessionId);
                                 cacheService.evictMessages(sessionId);
 

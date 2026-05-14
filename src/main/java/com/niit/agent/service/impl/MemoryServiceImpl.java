@@ -547,7 +547,7 @@ public class MemoryServiceImpl implements MemoryService {
                             AiModelRouterService.ChatOptions.AUXILIARY_NO_TOOLS)
                     .collectList()
                     .block(Duration.ofSeconds(90));
-            String summaryText = summaryChunks == null ? "" : String.join("", summaryChunks).trim();
+            String summaryText = joinStreamChunks(summaryChunks).trim();
             if (!summaryText.isEmpty()) {
                 Long newBoundaryMessageId = newMessages.get(newMessages.size() - 1).getId();
                 log.info("摘要生成完成，长度: {}, sessionId={}, 边界消息ID={}", summaryText.length(), sessionId, newBoundaryMessageId);
@@ -829,7 +829,7 @@ public class MemoryServiceImpl implements MemoryService {
                             AiModelRouterService.ChatOptions.AUXILIARY_NO_TOOLS)
                     .collectList()
                     .block(Duration.ofSeconds(Math.max(ragQueryExpansionTimeoutSeconds, 5)));
-            String responseText = chunks == null ? "" : String.join("", chunks);
+            String responseText = joinStreamChunks(chunks);
             return RetrievalUtil.parseExpandedQueries(responseText, Math.max(ragQueryExpansionVariants, 3));
         } catch (Exception e) {
             log.warn("查询扩展失败，回退原始查询: {}", e.getMessage());
@@ -937,7 +937,7 @@ public class MemoryServiceImpl implements MemoryService {
                             AiModelRouterService.ChatOptions.AUXILIARY_NO_TOOLS)
                     .collectList()
                     .block(Duration.ofSeconds(8));
-            String response = chunks == null ? "" : String.join("", chunks).trim();
+            String response = joinStreamChunks(chunks).trim();
             return parseCombinedResult(response);
         } catch (Exception e) {
             log.debug("合并意图+扩展调用失败: {}", e.getMessage());
@@ -1057,6 +1057,21 @@ public class MemoryServiceImpl implements MemoryService {
             default -> {
             }
         }
+    }
+
+    private String joinStreamChunks(List<String> chunks) {
+        if (chunks == null || chunks.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (String chunk : chunks) {
+            if (chunk.startsWith("R") || chunk.startsWith("C")) {
+                sb.append(chunk.substring(1));
+            } else {
+                sb.append(chunk);
+            }
+        }
+        return sb.toString();
     }
 
     private static final com.fasterxml.jackson.databind.ObjectMapper CHUNK_OBJECT_MAPPER =

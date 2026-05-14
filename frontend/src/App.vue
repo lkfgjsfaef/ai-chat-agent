@@ -439,9 +439,18 @@
               <span class="message-role-sub">{{ currentModel }}</span>
             </div>
             <div v-if="queueStatusText" class="queue-status-banner">{{ queueStatusText }}</div>
+            <div v-if="streamingReasoningText" class="reasoning-container" :class="{ 'reasoning-done': reasoningFinished }">
+              <div class="reasoning-header" @click="reasoningExpanded = !reasoningExpanded">
+                <span class="reasoning-icon">{{ reasoningFinished ? '💭' : '⏳' }}</span>
+                <span class="reasoning-title">{{ reasoningFinished ? '已完成深度思考' : '正在思考中...' }}</span>
+                <span class="reasoning-toggle">{{ reasoningExpanded ? '▾' : '▸' }}</span>
+              </div>
+              <div v-if="reasoningExpanded" class="reasoning-content" v-html="renderedReasoningHtml"></div>
+              <div v-else class="reasoning-collapsed" v-html="renderedReasoningPreview"></div>
+            </div>
             <div v-if="renderedHtml" v-html="renderedHtml"></div>
             <span v-if="isStreaming && renderedHtml" class="streaming-cursor"></span>
-            <div v-if="!streamingText" class="typing-indicator">
+            <div v-if="!streamingText && !streamingReasoningText" class="typing-indicator">
               <span></span><span></span><span></span>
             </div>
           </div>
@@ -603,6 +612,12 @@ const inputText = ref('')
 const isStreaming = ref(false)
 const streamingText = ref('')
 const renderedHtml = ref('')
+const streamingReasoningText = ref('')
+const renderedReasoningHtml = ref('')
+const renderedReasoningPreview = ref('')
+const reasoningExpanded = ref(false)
+const reasoningFinished = ref(false)
+let reasoningRenderTimer = null
 let renderThrottleTimer = null
 const RENDER_THROTTLE_MS = 80
 const queueStatus = ref(null)
@@ -1326,6 +1341,9 @@ async function startStream(text, isRetry = false) {
   if (!currentSessionId.value) return
   isStreaming.value = true
   streamingText.value = ''
+  streamingReasoningText.value = ''
+  reasoningExpanded.value = false
+  reasoningFinished.value = false
   queueStatus.value = null
   if (!isRetry) {
     pendingMessage.value = text
@@ -1364,8 +1382,14 @@ async function startStream(text, isRetry = false) {
 }
 
 function finishStream() {
-  if (streamingText.value) {
-    messages.value.push({ id: Date.now(), sessionId: currentSessionId.value, role: 'assistant', content: streamingText.value })
+  const finalContent = streamingText.value || streamingReasoningText.value
+  if (finalContent) {
+    messages.value.push({ id: Date.now(), sessionId: currentSessionId.value, role: 'assistant', content: finalContent })
+  }
+  if (streamingReasoningText.value) {
+    reasoningFinished.value = true
+    reasoningExpanded.value = false
+    scheduleReasoningRender()
   }
   resetStreamingState()
   nextTick(scrollToBottom)
@@ -1375,10 +1399,19 @@ function finishStream() {
 
 function resetStreamingState() {
   streamingText.value = ''
+  streamingReasoningText.value = ''
   renderedHtml.value = ''
+  renderedReasoningHtml.value = ''
+  renderedReasoningPreview.value = ''
+  reasoningExpanded.value = false
+  reasoningFinished.value = false
   if (renderThrottleTimer) {
     clearTimeout(renderThrottleTimer)
     renderThrottleTimer = null
+  }
+  if (reasoningRenderTimer) {
+    clearTimeout(reasoningRenderTimer)
+    reasoningRenderTimer = null
   }
   queueStatus.value = null
   isStreaming.value = false
@@ -1417,6 +1450,14 @@ function handleStreamPayload(eventName, eventData) {
     return false
   }
 
+  if (eventName === 'reasoning') {
+    streamingReasoningText.value += eventData
+    reasoningExpanded.value = true
+    scheduleReasoningRender()
+    nextTick(scrollToBottom)
+    return false
+  }
+
   if (eventName === 'queue_status') {
     handleQueueStatusPayload(tryParseJson(eventData))
     nextTick(scrollToBottom)
@@ -1434,6 +1475,12 @@ function handleStreamPayload(eventName, eventData) {
     ElMessage.error(jsonPayload.msg || '流式响应失败')
     resetStreamingState()
     return true
+  }
+
+  if (streamingReasoningText.value && !reasoningFinished.value) {
+    reasoningFinished.value = true
+    reasoningExpanded.value = false
+    scheduleReasoningRender()
   }
 
   queueStatus.value = null
@@ -1514,6 +1561,24 @@ watch(isStreaming, (val) => {
   }
 })
 
+function scheduleReasoningRender() {
+  if (reasoningRenderTimer) clearTimeout(reasoningRenderTimer)
+  reasoningRenderTimer = setTimeout(() => {
+    if (streamingReasoningText.value) {
+      renderedReasoningHtml.value = renderMarkdown(streamingReasoningText.value)
+      renderedReasoningPreview.value = renderMarkdown(getLastTwoLines(streamingReasoningText.value))
+    }
+  }, RENDER_THROTTLE_MS)
+}
+
+function getLastTwoLines(text) {
+  if (!text) return ''
+  const lines = text.split('\n')
+  const nonEmpty = lines.filter(l => l.trim())
+  if (nonEmpty.length <= 2) return nonEmpty.join('\n')
+  return '...\n' + nonEmpty.slice(-2).join('\n')
+}
+
 function startEditMessage(msg) {
   editingMessageId.value = msg.id
   editingMessageContent.value = msg.content
@@ -1556,6 +1621,9 @@ async function saveEditedMessage(messageId, index) {
 async function doRegenerate() {
   isStreaming.value = true
   streamingText.value = ''
+  streamingReasoningText.value = ''
+  reasoningExpanded.value = false
+  reasoningFinished.value = false
   queueStatus.value = null
   const token = localStorage.getItem('token')
   try {
@@ -1891,5 +1959,85 @@ onBeforeUnmount(() => {
   background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(129, 140, 248, 0.05));
   color: #4338ca;
   border-color: rgba(99, 102, 241, 0.18);
+}
+
+/* Reasoning / Thinking Section */
+.reasoning-container {
+  margin: 8px 0 12px 0;
+  border: 1px solid rgba(129, 140, 248, 0.2);
+  border-radius: 10px;
+  overflow: hidden;
+  background: rgba(129, 140, 248, 0.04);
+  transition: background 0.3s;
+}
+.reasoning-container.reasoning-done {
+  background: rgba(129, 140, 248, 0.02);
+  border-color: rgba(129, 140, 248, 0.1);
+}
+.reasoning-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.2s;
+}
+.reasoning-header:hover {
+  background: rgba(129, 140, 248, 0.06);
+}
+.reasoning-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+.reasoning-title {
+  flex: 1;
+  font-size: 13px;
+  color: #818cf8;
+  font-weight: 500;
+}
+.reasoning-toggle {
+  font-size: 10px;
+  color: #818cf8;
+  opacity: 0.7;
+}
+.reasoning-content {
+  padding: 0 14px 14px 14px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: #94a3b8;
+  max-height: 300px;
+  overflow-y: auto;
+}
+.reasoning-content::-webkit-scrollbar {
+  width: 4px;
+}
+.reasoning-content::-webkit-scrollbar-thumb {
+  background: rgba(129, 140, 248, 0.15);
+  border-radius: 2px;
+}
+.reasoning-collapsed {
+  padding: 0 14px 12px 14px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: #64748b;
+  opacity: 0.7;
+  max-height: 52px;
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+}
+:global(html.light) .reasoning-container {
+  background: rgba(129, 140, 248, 0.03);
+  border-color: rgba(129, 140, 248, 0.12);
+}
+:global(html.light) .reasoning-title {
+  color: #6366f1;
+}
+:global(html.light) .reasoning-content {
+  color: #64748b;
+}
+:global(html.light) .reasoning-collapsed {
+  color: #94a3b8;
 }
 </style>
