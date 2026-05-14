@@ -50,7 +50,8 @@ public abstract class AbstractOpenAiCompatibleModel implements AiModel {
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(120, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
-            .connectionPool(new ConnectionPool(50, 5, TimeUnit.MINUTES))
+            .connectionPool(new ConnectionPool(100, 3, TimeUnit.MINUTES))
+            .protocols(java.util.Arrays.asList(Protocol.HTTP_2, Protocol.HTTP_1_1))
             .connectionSpecs(Collections.singletonList(connectionSpec))
             .build();
 

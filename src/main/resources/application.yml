@@ -41,9 +41,9 @@ ai:
     max-concurrent-calls: 6
     queue-capacity: 24
     queue-timeout-ms: 12000
-    aux-max-concurrent-calls: 2
-    aux-queue-capacity: 8
-    aux-queue-timeout-ms: 3000
+    aux-max-concurrent-calls: 4
+    aux-queue-capacity: 12
+    aux-queue-timeout-ms: 6000
   rag:
     observability:
       enabled: true
@@ -57,6 +57,7 @@ ai:
     soft-fallback:
       enabled: true
     vector-search-top-k: 20
+    pipeline-timeout-seconds: 4
     chunk-attribution-ttl-minutes: 5
     query-expansion:
       enabled: true

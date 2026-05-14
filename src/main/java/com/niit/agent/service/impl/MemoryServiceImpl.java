@@ -159,6 +159,9 @@ public class MemoryServiceImpl implements MemoryService {
     @Value("${ai.rag.intent.llm-fallback.enabled:true}")
     private boolean ragIntentLlmFallbackEnabled;
 
+    @Value("${ai.rag.pipeline-timeout-seconds:4}")
+    private long ragPipelineTimeoutSeconds;
+
     @Value("${ai.rag.chunk-attribution-ttl-minutes:5}")
     private long ragChunkAttributionTtlMinutes;
 
@@ -217,7 +220,21 @@ public class MemoryServiceImpl implements MemoryService {
         RagDecision ragDecision = evaluateRagDecision(latestUserQuestion, recentMessages, knowledgeScopeStats);
         String ragCacheKey = buildRagCacheKey(sessionId, retrievalQueries, summary, recentMessages, knowledgeScopeStats);
         
-        executeRagPipeline(context, sessionId, session, latestUserQuestion, retrievalQuery, retrievalQueries, ragDecision, ragCacheKey);
+        if (ragDecision.enabled() && !latestUserQuestion.isEmpty() && !retrievalQuery.isEmpty()) {
+            try {
+                CompletableFuture.supplyAsync(() -> {
+                    executeRagPipeline(context, sessionId, session, latestUserQuestion, retrievalQuery, retrievalQueries, ragDecision, ragCacheKey);
+                    return true;
+                }, ragExecutor)
+                .orTimeout(ragPipelineTimeoutSeconds, TimeUnit.SECONDS)
+                .join();
+            } catch (Exception e) {
+                log.warn("RAG pipeline 超时或异常 ({}s), 跳过知识库检索, sessionId={}", ragPipelineTimeoutSeconds, sessionId);
+                recordRagMetrics(ragDecision, "timeout", false);
+            }
+        } else {
+            executeRagPipeline(context, sessionId, session, latestUserQuestion, retrievalQuery, retrievalQueries, ragDecision, ragCacheKey);
+        }
 
         for (ChatMessage msg : recentMessages) {
             Map<String, Object> userMsg = new HashMap<>();
