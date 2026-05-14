@@ -124,7 +124,13 @@ public abstract class AbstractOpenAiCompatibleModel implements AiModel {
                             if (choices != null && choices.isArray() && choices.size() > 0) {
                                 JsonNode delta = choices.get(0).get("delta");
                                 if (delta != null) {
-                                    // 1. 处理普通文本
+                                    // 1. 处理普通文本 (兼容推理模型的 reasoning_content)
+                                    if (delta.has("reasoning_content") && !delta.get("reasoning_content").isNull()) {
+                                        String rc = delta.get("reasoning_content").asText();
+                                        if (!rc.isEmpty()) {
+                                            sink.next(rc);
+                                        }
+                                    }
                                     if (delta.has("content") && !delta.get("content").isNull()) {
                                         String content = delta.get("content").asText();
                                         if (!content.isEmpty()) {
