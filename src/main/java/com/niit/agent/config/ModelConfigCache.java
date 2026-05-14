@@ -24,7 +24,7 @@ public class ModelConfigCache {
     public ModelConfigCache(ModelConfigMapper modelConfigMapper) {
         this.modelConfigMapper = modelConfigMapper;
         this.cache = Caffeine.newBuilder()
-                .expireAfterWrite(Duration.ofSeconds(60))
+                .expireAfterAccess(Duration.ofMinutes(10))
                 .maximumSize(50)
                 .<String, ModelConfig>build()
                 .asMap();

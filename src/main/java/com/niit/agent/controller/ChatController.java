@@ -158,7 +158,8 @@ public class ChatController {
                 long modelStart = System.currentTimeMillis();
                 boolean[] firstToken = {true};
                 var disposable = aiModelRouterService.streamChat(modelName, context,
-                                event -> emitQueueStatus(emitter, event))
+                                event -> emitQueueStatus(emitter, event),
+                                buildChatOptions(context))
                         .doOnNext(chunk -> {
                             fullResponse.append(chunk);
                             if (firstToken[0]) {
@@ -258,6 +259,41 @@ public class ChatController {
         } catch (Exception e) {
             log.debug("发送排队状态失败: {}", e.getMessage());
         }
+    }
+
+    private AiModelRouterService.ChatOptions buildChatOptions(List<Map<String, Object>> context) {
+        if (isSimpleChat(context)) {
+            return new AiModelRouterService.ChatOptions(false, AiModelRouterService.TaskLane.PRIMARY);
+        }
+        return AiModelRouterService.ChatOptions.DEFAULT;
+    }
+
+    private boolean isSimpleChat(List<Map<String, Object>> context) {
+        String latestUserMsg = null;
+        for (int i = context.size() - 1; i >= 0; i--) {
+            if ("user".equals(context.get(i).get("role"))) {
+                latestUserMsg = (String) context.get(i).get("content");
+                break;
+            }
+        }
+        if (latestUserMsg == null || latestUserMsg.isBlank()) {
+            return false;
+        }
+        String q = latestUserMsg.trim().toLowerCase();
+        if (q.length() > 15) {
+            return false;
+        }
+        String[] simplePatterns = {
+            "你好", "hello", "hi", "在吗", "谢谢", "感谢", "早上好", "晚上好", "午安",
+            "哈哈", "好的", "行", "收到", "ok", "嗯", "哦", "再见", "拜拜", "bye",
+            "晚安", "好的谢谢", "多谢", "不客气", "没事", "没关系"
+        };
+        for (String pattern : simplePatterns) {
+            if (q.contains(pattern)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String normalizeSkillId(String skillId) {

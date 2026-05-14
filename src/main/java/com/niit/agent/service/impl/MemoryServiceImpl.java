@@ -215,11 +215,21 @@ public class MemoryServiceImpl implements MemoryService {
         
         appendSkillInstruction(context, session, overrideSkillId, latestUserQuestion);
 
-        String retrievalQuery = buildRetrievalQuery(recentMessages, summary);
-        List<String> retrievalQueries = buildRetrievalQueries(retrievalQuery, latestUserQuestion, recentMessages, summary);
         RagDecision ragDecision = evaluateRagDecision(latestUserQuestion, recentMessages, knowledgeScopeStats);
-        String ragCacheKey = buildRagCacheKey(sessionId, retrievalQueries, summary, recentMessages, knowledgeScopeStats);
-        
+
+        final String retrievalQuery;
+        final List<String> retrievalQueries;
+        final String ragCacheKey;
+        if (ragDecision.enabled()) {
+            retrievalQuery = buildRetrievalQuery(recentMessages, summary);
+            retrievalQueries = buildRetrievalQueries(retrievalQuery, latestUserQuestion, recentMessages, summary);
+            ragCacheKey = buildRagCacheKey(sessionId, retrievalQueries, summary, recentMessages, knowledgeScopeStats);
+        } else {
+            retrievalQuery = "";
+            retrievalQueries = List.of();
+            ragCacheKey = "";
+        }
+
         if (ragDecision.enabled() && !latestUserQuestion.isEmpty() && !retrievalQuery.isEmpty()) {
             try {
                 CompletableFuture.supplyAsync(() -> {

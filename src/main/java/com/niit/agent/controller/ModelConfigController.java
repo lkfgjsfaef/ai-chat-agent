@@ -1,6 +1,7 @@
 package com.niit.agent.controller;
 
 import com.niit.agent.common.result.Result;
+import com.niit.agent.config.ModelConfigCache;
 import com.niit.agent.entity.ModelConfig;
 import com.niit.agent.mapper.ModelConfigMapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
@@ -15,6 +16,7 @@ import java.util.List;
 public class ModelConfigController {
 
     private final ModelConfigMapper modelConfigMapper;
+    private final ModelConfigCache modelConfigCache;
 
     @GetMapping("/list")
     public Result<List<ModelConfig>> list() {
@@ -28,6 +30,7 @@ public class ModelConfigController {
     @PostMapping("/update")
     public Result<Void> update(@RequestBody ModelConfig config) {
         modelConfigMapper.updateById(config);
+        modelConfigCache.refresh();
         return Result.ok();
     }
 }
