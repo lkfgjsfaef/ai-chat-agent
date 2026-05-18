@@ -96,7 +96,16 @@ public class RedisConfig {
                 .connectionTimeoutMillis(timeoutMillis)
                 .socketTimeoutMillis(timeoutMillis)
                 .build();
-        return new JedisPooled(address, clientConfig);
+
+        org.apache.commons.pool2.impl.GenericObjectPoolConfig<redis.clients.jedis.Connection> poolConfig =
+                new org.apache.commons.pool2.impl.GenericObjectPoolConfig<>();
+        poolConfig.setMaxTotal(32);
+        poolConfig.setMinIdle(8);
+        poolConfig.setMaxIdle(16);
+        poolConfig.setBlockWhenExhausted(true);
+        poolConfig.setMaxWait(java.time.Duration.ofMillis(timeoutMillis));
+
+        return new JedisPooled(poolConfig, address, clientConfig);
     }
 
     @Bean(destroyMethod = "shutdown")

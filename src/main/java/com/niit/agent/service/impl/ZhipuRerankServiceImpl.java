@@ -26,6 +26,7 @@ public class ZhipuRerankServiceImpl implements RerankService {
     private final OkHttpClient client = new OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
+            .connectionPool(new ConnectionPool(20, 3, TimeUnit.MINUTES))
             .build();
 
     @Override

@@ -19,9 +19,15 @@ spring:
     username: ${MYSQL_USER:root}
     password: ${MYSQL_PASSWORD:123456}
     hikari:
-      max-lifetime: 25200000
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 5000
+      idle-timeout: 300000
+      max-lifetime: 1800000
+      keepalive-time: 60000
       validation-timeout: 1000
       connection-test-query: SELECT 1
+      leak-detection-threshold: 30000
   data:
     redis:
       host: ${REDIS_HOST:localhost}

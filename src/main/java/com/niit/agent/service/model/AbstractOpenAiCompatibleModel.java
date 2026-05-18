@@ -48,7 +48,7 @@ public abstract class AbstractOpenAiCompatibleModel implements AiModel {
             
     private final OkHttpClient client = new OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(120, TimeUnit.SECONDS)
+            .readTimeout(180, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
             .connectionPool(new ConnectionPool(100, 3, TimeUnit.MINUTES))
             .protocols(java.util.Arrays.asList(Protocol.HTTP_2, Protocol.HTTP_1_1))

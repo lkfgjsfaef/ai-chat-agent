@@ -20,7 +20,12 @@ spring:
     username: ${MYSQL_USER}
     password: ${MYSQL_PASSWORD}
     hikari:
-      max-lifetime: 25200000
+      maximum-pool-size: 30
+      minimum-idle: 8
+      connection-timeout: 5000
+      idle-timeout: 300000
+      max-lifetime: 1800000
+      keepalive-time: 60000
       validation-timeout: 1000
       connection-test-query: SELECT 1
   data:

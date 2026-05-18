@@ -1,6 +1,7 @@
 package com.niit.agent.service.tools;
 
 import lombok.extern.slf4j.Slf4j;
+import okhttp3.ConnectionPool;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
@@ -23,6 +24,7 @@ public class WebSearchTool implements ToolHandler {
     private final OkHttpClient client = new OkHttpClient.Builder()
             .connectTimeout(8, TimeUnit.SECONDS)
             .readTimeout(12, TimeUnit.SECONDS)
+            .connectionPool(new ConnectionPool(10, 3, TimeUnit.MINUTES))
             .build();
 
     private static final Pattern LINK_PATTERN = Pattern.compile(

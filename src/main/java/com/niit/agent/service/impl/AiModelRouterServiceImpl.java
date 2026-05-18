@@ -456,6 +456,8 @@ public class AiModelRouterServiceImpl implements AiModelRouterService {
                 .waitDurationInOpenState(java.time.Duration.ofSeconds(Math.max(circuitOpenSeconds, 1)))
                 .automaticTransitionFromOpenToHalfOpenEnabled(true)
                 .recordException(throwable -> !(throwable instanceof CallNotPermittedException))
+                .slowCallDurationThreshold(java.time.Duration.ofSeconds(30))
+                .slowCallRateThreshold(50)
                 .build();
     }
 

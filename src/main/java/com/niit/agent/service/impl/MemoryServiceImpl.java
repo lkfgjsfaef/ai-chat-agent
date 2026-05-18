@@ -16,6 +16,7 @@ import com.niit.agent.mapper.ChatSummaryMapper;
 import com.niit.agent.service.AiModelRouterService;
 import com.niit.agent.service.AppSkillService;
 import com.niit.agent.service.CacheService;
+import com.niit.agent.entity.ChatAttachment;
 import com.niit.agent.service.ChatAttachmentService;
 import com.niit.agent.service.ChatMessageService;
 import com.niit.agent.service.ChatSessionService;
@@ -153,6 +154,27 @@ public class MemoryServiceImpl implements MemoryService {
     @Value("${ai.rag.vector-search-top-k:20}")
     private int ragVectorSearchTopK;
 
+    @Value("${ai.rag.broad-top-k:12}")
+    private int ragBroadTopK;
+
+    @Value("${ai.rag.broad-vector-quota:12}")
+    private int ragBroadVectorQuota;
+
+    @Value("${ai.rag.broad-keyword-quota:12}")
+    private int ragBroadKeywordQuota;
+
+    @Value("${ai.rag.broad-scope.session-quota:8}")
+    private int ragBroadSessionScopeQuota;
+
+    @Value("${ai.rag.broad-scope.user-quota:6}")
+    private int ragBroadUserScopeQuota;
+
+    @Value("${ai.rag.broad-scope.global-quota:4}")
+    private int ragBroadGlobalScopeQuota;
+
+    @Value("${ai.rag.full-max-chars:20000}")
+    private int ragFullMaxChars;
+
     @Value("${ai.rag.soft-fallback.enabled:true}")
     private boolean ragSoftFallbackEnabled;
 
@@ -230,7 +252,8 @@ public class MemoryServiceImpl implements MemoryService {
             ragCacheKey = "";
         }
 
-        if (ragDecision.enabled() && !latestUserQuestion.isEmpty() && !retrievalQuery.isEmpty()) {
+        if (ragDecision.enabled() && !latestUserQuestion.isEmpty()
+                && (!retrievalQuery.isEmpty() || RagDecision.SCOPE_FULL.equals(ragDecision.retrievalScope()))) {
             try {
                 CompletableFuture.supplyAsync(() -> {
                     executeRagPipeline(context, sessionId, session, latestUserQuestion, retrievalQuery, retrievalQueries, ragDecision, ragCacheKey);
@@ -303,8 +326,26 @@ public class MemoryServiceImpl implements MemoryService {
         String ragOutcome = "skipped";
         boolean ragCacheHit = false;
 
-        if (ragDecision.enabled() && !latestUserQuestion.isEmpty() && !retrievalQuery.isEmpty()) {
+        if (ragDecision.enabled() && !latestUserQuestion.isEmpty()
+                && (!retrievalQuery.isEmpty() || RagDecision.SCOPE_FULL.equals(ragDecision.retrievalScope()))) {
             try {
+                if (RagDecision.SCOPE_FULL.equals(ragDecision.retrievalScope())) {
+                    String fullDocContext = retrieveFullDocumentText(sessionId, session);
+                    if (!fullDocContext.isEmpty()) {
+                        ragOutcome = "hit_full";
+                        finalCandidateCount = 1;
+                        Map<String, Object> ragSysMsg = new HashMap<>();
+                        ragSysMsg.put("role", "system");
+                        ragSysMsg.put("content", fullDocContext);
+                        context.add(ragSysMsg);
+                        cacheRagPayload(sessionId, ragCacheKey, ragOutcome, fullDocContext,
+                                0, 0, 0, 0, finalCandidateCount);
+                        log.info("RAG全文档检索完成, sessionId={}, 文本长度={}", sessionId, fullDocContext.length());
+                    } else {
+                        ragOutcome = "full_no_document";
+                        context.add(buildNoHitSystemMessage());
+                    }
+                } else {
                 Map<String, Object> cachedRagResult = getCachedRagPayload(sessionId, ragCacheKey);
                 if (cachedRagResult != null) {
                     ragCacheHit = true;
@@ -319,10 +360,18 @@ public class MemoryServiceImpl implements MemoryService {
                     logRagTrace(sessionId, latestUserQuestion, ragDecision, vectorCandidateCount, keywordCandidateCount,
                             mergedCandidateCount, rerankedCandidateCount, finalCandidateCount, ragOutcome, ragStartNanos, true);
                 } else {
-                    log.info("执行RAG混合检索, sessionId={}, reason={}, queries={}", sessionId, ragDecision.reason(), retrievalQueries);
+                    log.info("执行RAG混合检索, sessionId={}, reason={}, scope={}, queries={}", sessionId, ragDecision.reason(), ragDecision.retrievalScope(), retrievalQueries);
+
+                    boolean broad = RagDecision.SCOPE_BROAD.equals(ragDecision.retrievalScope());
+                    int effVectorQuota = broad ? ragBroadVectorQuota : ragVectorQuota;
+                    int effKeywordQuota = broad ? ragBroadKeywordQuota : ragKeywordQuota;
+                    int effTopK = broad ? ragBroadTopK : ragTopK;
+                    int effSessionQuota = broad ? ragBroadSessionScopeQuota : ragSessionScopeQuota;
+                    int effUserQuota = broad ? ragBroadUserScopeQuota : ragUserScopeQuota;
+                    int effGlobalQuota = broad ? ragBroadGlobalScopeQuota : ragGlobalScopeQuota;
 
                     CompletableFuture<List<RetrievalCandidate>> vectorFuture = CompletableFuture
-                            .supplyAsync(() -> searchVectorKnowledge(retrievalQueries, session), ragExecutor)
+                            .supplyAsync(() -> searchVectorKnowledge(retrievalQueries, session, effVectorQuota, effSessionQuota, effUserQuota, effGlobalQuota), ragExecutor)
                             .completeOnTimeout(Collections.emptyList(), 2, TimeUnit.SECONDS)
                             .exceptionally(ex -> {
                                 log.warn("向量检索异步执行失败: {}", ex.getMessage());
@@ -330,7 +379,7 @@ public class MemoryServiceImpl implements MemoryService {
                             });
 
                     CompletableFuture<List<RetrievalCandidate>> keywordFuture = CompletableFuture
-                            .supplyAsync(() -> searchKeywordKnowledge(retrievalQueries, session), ragExecutor)
+                            .supplyAsync(() -> searchKeywordKnowledge(retrievalQueries, session, effKeywordQuota, effSessionQuota, effUserQuota, effGlobalQuota), ragExecutor)
                             .completeOnTimeout(Collections.emptyList(), 2, TimeUnit.SECONDS)
                             .exceptionally(ex -> {
                                 log.warn("BM25 检索异步执行失败: {}", ex.getMessage());
@@ -343,9 +392,7 @@ public class MemoryServiceImpl implements MemoryService {
                     vectorCandidateCount = vectorCandidates.size();
                     keywordCandidateCount = keywordCandidates.size();
 
-                    Map<String, RetrievalCandidate> candidateMap = new LinkedHashMap<>();
-                    mergeCandidates(candidateMap, vectorCandidates);
-                    mergeCandidates(candidateMap, keywordCandidates);
+                    Map<String, RetrievalCandidate> candidateMap = mergeCandidatesWithRrf(vectorCandidates, keywordCandidates);
                     List<RetrievalCandidate> combinedCandidates = new ArrayList<>(candidateMap.values());
                     mergedCandidateCount = combinedCandidates.size();
                     
@@ -354,7 +401,7 @@ public class MemoryServiceImpl implements MemoryService {
                                 .map(RetrievalCandidate::content)
                                 .toList();
 
-                        List<RerankService.RerankResult> rerankedResults = performRerank(retrievalQuery, candidateContents);
+                        List<RerankService.RerankResult> rerankedResults = performRerank(retrievalQuery, candidateContents, effTopK);
                         rerankedCandidateCount = rerankedResults.size();
 
                         List<RankedRetrievalCandidate> finalCandidates = rerankedResults.stream()
@@ -420,6 +467,7 @@ public class MemoryServiceImpl implements MemoryService {
                         log.info("RAG混合检索未命中有效片段, sessionId={}", sessionId);
                     }
                 }
+                }
             } catch (Exception e) {
                 ragOutcome = "error";
                 log.warn("RAG向量检索失败: {}", e.getMessage());
@@ -436,12 +484,12 @@ public class MemoryServiceImpl implements MemoryService {
         recordRagMetrics(ragDecision, ragOutcome, ragCacheHit);
     }
 
-    private List<RerankService.RerankResult> performRerank(String retrievalQuery, List<String> candidateContents) {
+    private List<RerankService.RerankResult> performRerank(String retrievalQuery, List<String> candidateContents, int topK) {
         if (rerankService != null) {
-            return rerankService.rerankWithScores(retrievalQuery, candidateContents, ragTopK);
+            return rerankService.rerankWithScores(retrievalQuery, candidateContents, topK);
         }
         return candidateContents.stream()
-                .limit(ragTopK)
+                .limit(topK)
                 .map(content -> new RerankService.RerankResult(content, 1.0))
                 .toList();
     }
@@ -451,7 +499,7 @@ public class MemoryServiceImpl implements MemoryService {
                 .append("\n[知识库检索结果开始]\n");
         for (int i = 0; i < finalCandidates.size(); i++) {
             RankedRetrievalCandidate candidate = finalCandidates.get(i);
-            ragContext.append(String.format("--- 片段 %d | 来源: %s | 相关性: %.3f ---\n%s\n\n",
+            ragContext.append(String.format("--- 片段 %d | 来源: %s | 相关性: %.1f ---\n%s\n\n",
                     i + 1, candidate.sourceLabel(), candidate.score(), candidate.content()));
         }
         ragContext.append("[知识库检索结果结束]\n");
@@ -612,7 +660,8 @@ public class MemoryServiceImpl implements MemoryService {
         return metrics;
     }
 
-    private List<RetrievalCandidate> searchVectorKnowledge(List<String> retrievalQueries, ChatSession session) {
+    private List<RetrievalCandidate> searchVectorKnowledge(List<String> retrievalQueries, ChatSession session,
+                                                          int vectorQuota, int sessionQuota, int userQuota, int globalQuota) {
         Map<String, RetrievalCandidate> mergedCandidates = new LinkedHashMap<>();
         for (String retrievalQuery : retrievalQueries) {
             try {
@@ -633,10 +682,11 @@ public class MemoryServiceImpl implements MemoryService {
                 log.warn("向量检索失败, query={}, error={}", RetrievalUtil.summarizeQuestion(retrievalQuery), e.getMessage());
             }
         }
-        return prioritizeScopedCandidates(new ArrayList<>(mergedCandidates.values()), ragVectorQuota);
+        return prioritizeScopedCandidates(new ArrayList<>(mergedCandidates.values()), vectorQuota, sessionQuota, userQuota, globalQuota);
     }
 
-    private List<RetrievalCandidate> searchKeywordKnowledge(List<String> retrievalQueries, ChatSession session) {
+    private List<RetrievalCandidate> searchKeywordKnowledge(List<String> retrievalQueries, ChatSession session,
+                                                           int keywordQuota, int sessionQuota, int userQuota, int globalQuota) {
         if (unifiedJedis == null) {
             return Collections.emptyList();
         }
@@ -667,7 +717,7 @@ public class MemoryServiceImpl implements MemoryService {
                 log.warn("BM25 关键字检索失败 (可能索引不存在或语法错误), query={}, error={}", RetrievalUtil.summarizeQuestion(retrievalQuery), e.getMessage());
             }
         }
-        return prioritizeScopedCandidates(new ArrayList<>(mergedCandidates.values()), ragKeywordQuota);
+        return prioritizeScopedCandidates(new ArrayList<>(mergedCandidates.values()), keywordQuota, sessionQuota, userQuota, globalQuota);
     }
 
     private void mergeCandidates(Map<String, RetrievalCandidate> candidateMap, List<RetrievalCandidate> candidates) {
@@ -694,6 +744,50 @@ public class MemoryServiceImpl implements MemoryService {
         return String.join("+", labels);
     }
 
+    private Map<String, RetrievalCandidate> mergeCandidatesWithRrf(
+            List<RetrievalCandidate> vectorCandidates,
+            List<RetrievalCandidate> keywordCandidates) {
+        final double k = 60.0;
+        Map<String, Double> rrfScores = new LinkedHashMap<>();
+        Map<String, RetrievalCandidate> candidateByContent = new LinkedHashMap<>();
+
+        for (int i = 0; i < vectorCandidates.size(); i++) {
+            RetrievalCandidate c = vectorCandidates.get(i);
+            if (c == null || c.content() == null || c.content().isBlank()) {
+                continue;
+            }
+            String content = c.content();
+            rrfScores.merge(content, 1.0 / (k + i + 1), Double::sum);
+            candidateByContent.putIfAbsent(content, c);
+        }
+
+        for (int i = 0; i < keywordCandidates.size(); i++) {
+            RetrievalCandidate c = keywordCandidates.get(i);
+            if (c == null || c.content() == null || c.content().isBlank()) {
+                continue;
+            }
+            String content = c.content();
+            rrfScores.merge(content, 1.0 / (k + i + 1), Double::sum);
+            if (candidateByContent.containsKey(content)) {
+                RetrievalCandidate existing = candidateByContent.get(content);
+                candidateByContent.put(content, new RetrievalCandidate(
+                        existing.content(),
+                        mergeSourceLabels(existing.sourceLabel(), c.sourceLabel()),
+                        preferredScope(existing.scope(), c.scope())));
+            } else {
+                candidateByContent.putIfAbsent(content, c);
+            }
+        }
+
+        return rrfScores.entrySet().stream()
+                .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
+                .collect(Collectors.toMap(
+                        Map.Entry::getKey,
+                        candidateByContent::get,
+                        (a, b) -> a,
+                        LinkedHashMap::new));
+    }
+
     private RankedRetrievalCandidate toRankedCandidate(RerankService.RerankResult result, Map<String, RetrievalCandidate> candidateMap) {
         RetrievalCandidate candidate = candidateMap.get(result.document());
         if (candidate == null) {
@@ -705,8 +799,52 @@ public class MemoryServiceImpl implements MemoryService {
     private Map<String, Object> buildNoHitSystemMessage() {
         Map<String, Object> noHitMsg = new HashMap<>();
         noHitMsg.put("role", "system");
-        noHitMsg.put("content", "当前知识库未检索到足够相关的证据片段。本轮回答必须明确说明“无相关信息”或“知识库未提供足够证据”，禁止补充未检索到的事实、步骤或配置。");
+        noHitMsg.put("content", "当前知识库未检索到足够相关的证据片段。本轮回答必须明确说明「无相关信息」或「知识库未提供足够证据」，禁止补充未检索到的事实、步骤或配置。");
         return noHitMsg;
+    }
+
+    private String retrieveFullDocumentText(Long sessionId, ChatSession session) {
+        try {
+            List<ChatAttachment> attachments = chatAttachmentMapper.selectList(
+                    new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<ChatAttachment>()
+                            .eq(ChatAttachment::getSessionId, sessionId));
+            if (attachments == null || attachments.isEmpty()) {
+                log.info("Full doc retrieval: no attachments for sessionId={}", sessionId);
+                return "";
+            }
+            StringBuilder fullText = new StringBuilder(buildRagInstruction(""))
+                    .append("\n[Full document content from knowledge base]\n");
+            int totalChars = 0;
+            for (ChatAttachment attachment : attachments) {
+                try {
+                    String text = chatAttachmentService.getFullText(attachment.getId());
+                    if (text != null && !text.isBlank()) {
+                        if (totalChars + text.length() > ragFullMaxChars) {
+                            int remaining = ragFullMaxChars - totalChars;
+                            if (remaining > 200) {
+                                fullText.append("\n=== ").append(attachment.getFileName())
+                                        .append(" (truncated) ===\n");
+                                fullText.append(text, 0, remaining);
+                                fullText.append("\n...[document too long, truncated]...\n");
+                            }
+                            break;
+                        }
+                        fullText.append("\n=== ").append(attachment.getFileName()).append(" ===\n");
+                        fullText.append(text).append("\n");
+                        totalChars += text.length();
+                    }
+                } catch (Exception e) {
+                    log.warn("Full doc retrieval failed for attachmentId={}, fileName={}, error={}",
+                            attachment.getId(), attachment.getFileName(), e.getMessage());
+                }
+            }
+            fullText.append("[End of full document content]\n");
+            log.info("Full doc retrieval done: sessionId={}, files={}, totalChars={}", sessionId, attachments.size(), totalChars);
+            return fullText.toString();
+        } catch (Exception e) {
+            log.warn("Full doc retrieval failed: sessionId={}, error={}", sessionId, e.getMessage());
+            return "";
+        }
     }
 
     private String extractLatestUserQuestion(List<ChatMessage> recentMessages) {
@@ -842,7 +980,7 @@ public class MemoryServiceImpl implements MemoryService {
                 你是一个严格依据知识库证据回答问题的企业知识助手。
                 回答规则：
                 1. 只能使用[知识库检索结果]中的事实回答，禁止补充片段中未出现的步骤、配置、原因或结论。
-                2. 如果证据不足、没有直接答案或资料缺步骤，请明确回答“无相关信息”或“知识库未提供足够证据”，禁止猜测和编造。
+                2. 如果证据不足、没有直接答案或资料缺步骤，请明确回答"无相关信息"或"知识库未提供足够证据"，禁止猜测和编造。
                 3. 每个关键结论、原因、步骤后都必须标注来源，格式为 [来源: xxx]。
                 4. 如果多个片段有冲突，优先采用更贴近问题、步骤更完整、来源更具体的片段，并标注来源。
                 5. 不要输出检索分数，不要声称自己查阅了外部网页或数据库。
@@ -886,11 +1024,13 @@ public class MemoryServiceImpl implements MemoryService {
             return new RagDecision(false, "no_accessible_knowledge");
         }
         if (containsKnowledgeKeyword(normalizedQuestion)) {
-            return new RagDecision(true, "knowledge_keyword");
+            String scope = isFullDocumentIntent(normalizedQuestion) ? RagDecision.SCOPE_FULL : RagDecision.SCOPE_FOCUSED;
+            return new RagDecision(true, "knowledge_keyword", scope);
         }
 
         if (looksLikeKnowledgeQuestion(normalizedQuestion) || isFollowUpQuestion(normalizedQuestion, recentMessages)) {
-            return new RagDecision(true, "scoped_knowledge_follow_up");
+            String scope = isFullDocumentIntent(normalizedQuestion) ? RagDecision.SCOPE_FULL : RagDecision.SCOPE_FOCUSED;
+            return new RagDecision(true, "scoped_knowledge_follow_up", scope);
         }
 
         // LLM fallback for ambiguous cases — 合并意图判断+查询扩展为一次调用
@@ -902,7 +1042,7 @@ public class MemoryServiceImpl implements MemoryService {
                         int cacheKey = Objects.hash(latestUserQuestion);
                         expansionCache.put(cacheKey, new CachedExpansion(combined.expandedQueries(), System.currentTimeMillis()));
                     }
-                    return new RagDecision(true, "llm_fallback");
+                    return new RagDecision(true, "llm_fallback", combined.retrievalScope());
                 }
             } catch (Exception e) {
                 log.debug("合并意图+扩展调用失败，回退到规则判断: {}", e.getMessage());
@@ -916,14 +1056,19 @@ public class MemoryServiceImpl implements MemoryService {
         Map<String, Object> sysMsg = new HashMap<>();
         sysMsg.put("role", "system");
         sysMsg.put("content", """
-            你是一个知识库检索助手，请完成两项任务：
+            你是一个知识库检索助手，请完成以下任务：
             1. 判断用户问题是否需要检索知识库来获取准确答案
             2. 如果需要检索，输出3-5个适合检索的不同表达（覆盖口语化、书面化、故障描述、操作描述等角度）
+            3. 判断检索范围：
+               - focused: 用户问具体事实/细节/单个问题（如"文档里提到Python了吗"）
+               - broad: 用户想了解某一方面或章节（如"工作经历部分详细说说"）
+               - full: 用户要求总结/概括/了解整体内容（如"给我讲讲这个文档"、"文件里有什么"）
 
             输出格式（严格遵守）：
             第一行：INTENT: YES 或 INTENT: NO
+            第二行：SCOPE: focused 或 SCOPE: broad 或 SCOPE: full
             如果需要检索，后续每行一个查询改写（不要编号，不要解释）
-            如果不需要检索，只输出 INTENT: NO，不要输出其他内容""");
+            如果不需要检索，只输出 INTENT: NO，不要输出SCOPE和其他内容""");
 
         Map<String, Object> userMsg = new HashMap<>();
         userMsg.put("role", "user");
@@ -952,14 +1097,21 @@ public class MemoryServiceImpl implements MemoryService {
 
         String[] lines = response.split("\\n");
         boolean needsKnowledge = false;
+        String scope = RagDecision.SCOPE_FOCUSED;
         List<String> queries = new ArrayList<>();
 
         for (String line : lines) {
             String trimmed = line.trim();
             if (trimmed.isEmpty()) continue;
-            if (trimmed.toUpperCase(Locale.ROOT).startsWith("INTENT:")) {
-                needsKnowledge = trimmed.toUpperCase(Locale.ROOT).contains("YES");
-            } else if (needsKnowledge && !trimmed.startsWith("INTENT")) {
+            String upperTrimmed = trimmed.toUpperCase(Locale.ROOT);
+            if (upperTrimmed.startsWith("INTENT:")) {
+                needsKnowledge = upperTrimmed.contains("YES");
+            } else if (upperTrimmed.startsWith("SCOPE:")) {
+                String scopeValue = trimmed.substring(6).trim().toLowerCase(Locale.ROOT);
+                if (RagDecision.SCOPE_FULL.equals(scopeValue) || RagDecision.SCOPE_BROAD.equals(scopeValue)) {
+                    scope = scopeValue;
+                }
+            } else if (needsKnowledge && !upperTrimmed.startsWith("INTENT") && !upperTrimmed.startsWith("SCOPE")) {
                 String cleaned = RetrievalUtil.sanitizeQueryVariant(trimmed);
                 if (!cleaned.isEmpty()) {
                     queries.add(cleaned);
@@ -967,7 +1119,7 @@ public class MemoryServiceImpl implements MemoryService {
             }
         }
 
-        return new CombinedIntentResult(needsKnowledge, queries);
+        return new CombinedIntentResult(needsKnowledge, queries, scope);
     }
 
     private KnowledgeScopeStats getKnowledgeScopeStats(ChatSession session) {
@@ -1019,6 +1171,12 @@ public class MemoryServiceImpl implements MemoryService {
         return TextUtils.containsAny(question, new String[]{
                 "几点", "时间", "天气", "下雨", "温度", "weather", "time"
         });
+    }
+
+    private boolean isFullDocumentIntent(String question) {
+        String[] fullIntentKeywords = {"总结", "概括", "梳理", "讲讲", "介绍", "所有", "全部", "完整", "整体", "里面", "都有", "包含", "有什么"};
+        String[] documentRefKeywords = {"文档", "文件", "简历", "资料", "合同", "这个", "那个", "上传", "附件", "知识库"};
+        return TextUtils.containsAny(question, fullIntentKeywords) && TextUtils.containsAny(question, documentRefKeywords);
     }
 
     private void logRagTrace(Long sessionId, String latestUserQuestion, RagDecision ragDecision,
@@ -1286,15 +1444,16 @@ public class MemoryServiceImpl implements MemoryService {
                 buildKnowledgeSourceLabel(resolvedScope, "关键词检索", sourcePath, fileName), resolvedScope);
     }
 
-    private List<RetrievalCandidate> prioritizeScopedCandidates(List<RetrievalCandidate> candidates, int totalQuota) {
+    private List<RetrievalCandidate> prioritizeScopedCandidates(List<RetrievalCandidate> candidates, int totalQuota,
+                                                                int sessionQuota, int userQuota, int globalQuota) {
         if (candidates == null || candidates.isEmpty() || totalQuota <= 0) {
             return Collections.emptyList();
         }
         List<RetrievalCandidate> prioritized = new ArrayList<>(Math.min(candidates.size(), totalQuota));
         Set<String> selectedContents = new LinkedHashSet<>();
-        appendScopedCandidates(prioritized, selectedContents, candidates, Constants.SCOPE_SESSION, ragSessionScopeQuota, totalQuota);
-        appendScopedCandidates(prioritized, selectedContents, candidates, Constants.SCOPE_USER, ragUserScopeQuota, totalQuota);
-        appendScopedCandidates(prioritized, selectedContents, candidates, Constants.SCOPE_GLOBAL, ragGlobalScopeQuota, totalQuota);
+        appendScopedCandidates(prioritized, selectedContents, candidates, Constants.SCOPE_SESSION, sessionQuota, totalQuota);
+        appendScopedCandidates(prioritized, selectedContents, candidates, Constants.SCOPE_USER, userQuota, totalQuota);
+        appendScopedCandidates(prioritized, selectedContents, candidates, Constants.SCOPE_GLOBAL, globalQuota, totalQuota);
         if (prioritized.size() < totalQuota) {
             for (RetrievalCandidate candidate : candidates) {
                 if (prioritized.size() >= totalQuota) {
@@ -1404,7 +1563,11 @@ public class MemoryServiceImpl implements MemoryService {
         }
     }
 
-    private record CombinedIntentResult(boolean needsKnowledge, List<String> expandedQueries) {}
+    private record CombinedIntentResult(boolean needsKnowledge, List<String> expandedQueries, String retrievalScope) {
+        CombinedIntentResult(boolean needsKnowledge, List<String> expandedQueries) {
+            this(needsKnowledge, expandedQueries, RagDecision.SCOPE_FOCUSED);
+        }
+    }
 
     private record CachedExpansion(List<String> queries, long createdAtMs) {}
 }
