@@ -8,6 +8,8 @@ import org.springframework.web.multipart.MultipartFile;
 public interface ChatAttachmentService extends IService<ChatAttachment> {
     ChatAttachment uploadAndParse(MultipartFile file, Long sessionId, String scope, Long currentUserId) throws Exception;
 
+    ChatAttachment uploadImage(MultipartFile file, Long sessionId, String scope, Long currentUserId) throws Exception;
+
     ChatAttachment deleteAttachment(Long attachmentId, Long currentUserId, boolean admin);
 
     KnowledgeAttachmentPageVO listAccessibleAttachments(Long currentUserId, boolean admin, String scope,
@@ -15,4 +17,6 @@ public interface ChatAttachmentService extends IService<ChatAttachment> {
                                                         long current, long size);
 
     String getFullText(Long attachmentId);
+
+    String getImageBase64(Long attachmentId, Long currentUserId);
 }

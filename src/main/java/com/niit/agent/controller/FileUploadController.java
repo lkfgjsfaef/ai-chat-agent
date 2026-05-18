@@ -22,6 +22,33 @@ public class FileUploadController {
     private final CacheService cacheService;
     private final ChatSessionService chatSessionService;
 
+    @PostMapping("/image")
+    public Result<ChatAttachment> uploadImage(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "sessionId", required = false) Long sessionId,
+            @RequestParam(value = "scope", required = false) String scope,
+            HttpServletRequest request) {
+        try {
+            if (file.isEmpty()) {
+                return Result.fail("图片不能为空");
+            }
+            Long currentUserId = parseLongAttribute(request.getAttribute("userId"));
+            if (currentUserId == null) {
+                return Result.fail("未识别当前用户");
+            }
+            String resolvedScope = resolveScope(scope, sessionId);
+            if ("global".equals(resolvedScope) && !isAdmin(request)) {
+                return Result.fail("全局知识库仅限管理员上传");
+            }
+            ChatAttachment attachment = chatAttachmentService.uploadImage(file, sessionId, resolvedScope, currentUserId);
+            return Result.ok(attachment);
+        } catch (IllegalArgumentException e) {
+            return Result.fail(e.getMessage());
+        } catch (Exception e) {
+            return Result.fail("图片上传失败: " + e.getMessage());
+        }
+    }
+
     @PostMapping("/file")
     public Result<ChatAttachment> uploadFile(
             @RequestParam("file") MultipartFile file,

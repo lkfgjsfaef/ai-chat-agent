@@ -117,6 +117,14 @@ export function uploadFile(file: File, sessionId?: number): Promise<ApiResponse<
   return request.post('/upload/file', formData) as Promise<ApiResponse<KnowledgeAttachment>>
 }
 
+export function uploadImage(file: File, sessionId?: number, scope?: string): Promise<ApiResponse<KnowledgeAttachment>> {
+  const formData = new FormData()
+  formData.append('file', file)
+  if (sessionId) formData.append('sessionId', String(sessionId))
+  if (scope) formData.append('scope', scope)
+  return request.post('/upload/image', formData) as Promise<ApiResponse<KnowledgeAttachment>>
+}
+
 export function uploadToKnowledgeBase(file: File, scope?: string, sessionId?: number): Promise<ApiResponse<KnowledgeAttachment>> {
   const formData = new FormData()
   formData.append('file', file)

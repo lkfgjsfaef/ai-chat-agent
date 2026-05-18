@@ -110,6 +110,11 @@ ai:
     web-search:
       enabled: false
 
+file:
+  image-max-size: 5242880
+  image-max-dimension: 2048
+  image-jpeg-quality: 0.8
+
 springdoc:
   api-docs:
     path: /v3/api-docs

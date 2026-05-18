@@ -78,7 +78,7 @@
     </div>
   </div>
 
-  <div v-else class="chat-container">
+  <div v-else class="chat-container" @dragover.prevent="handleDragOver" @dragleave.prevent="handleDragLeave" @drop.prevent="handleDrop">
     <el-dialog v-model="promptDialogVisible" title="设置系统提示词" width="500px">
       <el-input
         v-model="tempSystemPrompt"
@@ -625,10 +625,22 @@
               </el-dropdown-menu>
             </template>
           </el-dropdown>
+          <el-button size="small" type="primary" text class="input-tool-btn" @click="imageInput.click()" :loading="imageUploadCount > 0">
+            <el-icon><Picture /></el-icon> 图片
+          </el-button>
+          <input type="file" ref="imageInput" style="display: none" accept="image/*" multiple @change="handleImageSelect" />
           <el-button size="small" type="primary" text class="input-tool-btn" @click="fileInput.click()" :loading="isUploading">
             <el-icon><Paperclip /></el-icon> 上传文件
           </el-button>
           <input type="file" ref="fileInput" style="display: none" @change="handleFileUpload" />
+        </div>
+        <div v-if="pendingImages.length > 0" class="image-preview-bar">
+          <div v-for="(img, idx) in pendingImages" :key="img.id || idx" class="image-preview-item">
+            <img :src="img.previewUrl" :alt="img.fileName" class="image-preview-thumb" />
+            <span class="image-preview-name">{{ img.fileName }}</span>
+            <el-button v-if="img.uploading" size="small" type="warning" text loading />
+            <el-button v-else size="small" type="danger" text :icon="Close" @click="removePendingImage(idx)" />
+          </div>
         </div>
         <div class="input-wrapper">
           <el-input
@@ -667,14 +679,20 @@
         </div>
       </div>
     </div>
+    <div v-if="isDragOver" class="drag-overlay">
+      <div class="drag-overlay-content">
+        <el-icon :size="48"><Picture /></el-icon>
+        <p>释放以添加图片</p>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { ref, nextTick, onMounted, onBeforeUnmount, computed, watch } from 'vue'
-import { Plus, RefreshRight, CopyDocument, Promotion, Delete, Edit, Download, Refresh, Search, Expand, Upload, Paperclip, Close } from '@element-plus/icons-vue'
+import { Plus, RefreshRight, CopyDocument, Promotion, Delete, Edit, Download, Refresh, Search, Expand, Upload, Paperclip, Close, Picture } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { login, register, createSession, listSessions, deleteSession, listMessages, listModels, regenerate, renameSession, updateSystemPrompt, updateMessage, deleteAfterMessage, searchSessions, searchMessages, getUserProfile, updateUserProfile, uploadAvatar, updateFeedback, listTags, createTag, deleteTag, addTagToSession, removeTagFromSession, listTemplates, uploadFile, listSkills, updateSessionSkill, uploadToKnowledgeBase, listKnowledgeFiles, deleteKnowledgeFile } from './chatApi'
+import { login, register, createSession, listSessions, deleteSession, listMessages, listModels, regenerate, renameSession, updateSystemPrompt, updateMessage, deleteAfterMessage, searchSessions, searchMessages, getUserProfile, updateUserProfile, uploadAvatar, updateFeedback, listTags, createTag, deleteTag, addTagToSession, removeTagFromSession, listTemplates, uploadFile, listSkills, updateSessionSkill, uploadToKnowledgeBase, listKnowledgeFiles, deleteKnowledgeFile, uploadImage } from './chatApi'
 import { renderMarkdown, escapeHtml } from './utils/markdown'
 
 const DEBOUNCE_DELAY = 300
@@ -696,6 +714,10 @@ const editingSessionId = ref(null)
 const editingTitle = ref('')
 const editInputRef = ref(null)
 const fileInput = ref(null)
+const imageInput = ref(null)
+const pendingImages = ref([])
+const isDragOver = ref(false)
+const imageUploadCount = ref(0)
 
 const pendingAttachments = ref([])
 const isUploading = ref(false)
@@ -1488,8 +1510,82 @@ async function quickChat(text) {
   sendMessage()
 }
 
+function handleImageSelect(e) {
+  const files = e.target.files
+  if (!files || files.length === 0) return
+  for (const file of files) {
+    uploadPendingImage(file)
+  }
+  if (imageInput.value) imageInput.value.value = ''
+}
+
+function handleDragOver(e) {
+  if (!e.dataTransfer) return
+  const hasImage = Array.from(e.dataTransfer.types).some(t => t === 'Files')
+  if (hasImage) {
+    isDragOver.value = true
+  }
+}
+
+function handleDragLeave(e) {
+  if (e.currentTarget === e.target || e.relatedTarget === null) {
+    isDragOver.value = false
+  }
+}
+
+function handleDrop(e) {
+  isDragOver.value = false
+  const files = e.dataTransfer?.files
+  if (!files || files.length === 0) return
+  for (const file of files) {
+    if (file.type.startsWith('image/')) {
+      uploadPendingImage(file)
+    }
+  }
+}
+
+async function uploadPendingImage(file) {
+  if (!file.type.startsWith('image/')) {
+    ElMessage.warning('仅支持图片文件')
+    return
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    ElMessage.warning('图片大小不能超过 5MB')
+    return
+  }
+  const previewUrl = URL.createObjectURL(file)
+  const imgEntry = { id: null, fileName: file.name, previewUrl, uploading: true }
+  pendingImages.value.push(imgEntry)
+  imageUploadCount.value++
+  try {
+    const scope = currentSessionId.value ? 'session' : 'user'
+    const res = await uploadImage(file, currentSessionId.value || undefined, scope)
+    if (res.code === 200) {
+      imgEntry.id = res.data.id
+      imgEntry.uploading = false
+    } else {
+      ElMessage.error(res.msg || '图片上传失败')
+      URL.revokeObjectURL(imgEntry.previewUrl)
+      pendingImages.value = pendingImages.value.filter(i => i !== imgEntry)
+    }
+  } catch (err) {
+    ElMessage.error('图片上传失败')
+    URL.revokeObjectURL(imgEntry.previewUrl)
+    pendingImages.value = pendingImages.value.filter(i => i !== imgEntry)
+  } finally {
+    imageUploadCount.value--
+  }
+}
+
+function removePendingImage(idx) {
+  const img = pendingImages.value[idx]
+  if (img && img.previewUrl) URL.revokeObjectURL(img.previewUrl)
+  pendingImages.value.splice(idx, 1)
+}
+
 function sendMessage() {
-  if (!inputText.value.trim() && pendingAttachments.value.length === 0) return
+  const hasImages = pendingImages.value.some(i => i.id && !i.uploading)
+  if (!inputText.value.trim() && pendingAttachments.value.length === 0 && !hasImages) return
   if (isStreaming.value) return
 
   if (!currentSessionId.value) {
@@ -1498,7 +1594,7 @@ function sendMessage() {
     return
   }
 
-  let text = inputText.value.trim()
+  let text = inputText.value.trim() || '请描述这张图片'
   if (pendingAttachments.value.length > 0) {
     const attachmentStr = pendingAttachments.value.map(a => `📎 **${a.fileName}**`).join('、')
     if (text) {
@@ -1509,13 +1605,19 @@ function sendMessage() {
     pendingAttachments.value = []
   }
 
+  const imageIds = pendingImages.value.filter(i => i.id && !i.uploading).map(i => i.id)
+  for (const img of pendingImages.value) {
+    if (img.previewUrl) URL.revokeObjectURL(img.previewUrl)
+  }
+  pendingImages.value = []
+
   inputText.value = ''
   messages.value.push({ id: Date.now(), sessionId: currentSessionId.value, role: 'user', content: text })
   nextTick(scrollToBottom)
-  startStream(text)
+  startStream(text, false, imageIds)
 }
 
-async function startStream(text, isRetry = false) {
+async function startStream(text, isRetry = false, imageIds = []) {
   if (!currentSessionId.value) return
   isStreaming.value = true
   streamingText.value = ''
@@ -1533,6 +1635,7 @@ async function startStream(text, isRetry = false) {
   params.append('content', text)
   if (currentModel.value) params.append('modelName', currentModel.value)
   if (temporarySkillId.value) params.append('skillId', temporarySkillId.value)
+  if (imageIds && imageIds.length > 0) params.append('imageIds', imageIds.join(','))
 
   try {
     activeAbortController?.abort()
@@ -1556,7 +1659,7 @@ async function startStream(text, isRetry = false) {
       ElMessage.warning(`连接断开，正在尝试重连 (${reconnectAttempts.value}/${MAX_RECONNECT_ATTEMPTS})...`)
       setTimeout(() => {
         if (pendingMessage.value && isStreaming.value) {
-          startStream(pendingMessage.value, true)
+          startStream(pendingMessage.value, true, imageIds)
         }
       }, RECONNECT_DELAY)
     } else {
@@ -1995,8 +2098,21 @@ function scopeTagType(scope) {
   return { session: '', user: 'success', global: 'warning' }[scope] || ''
 }
 
+function handlePaste(e) {
+  const items = e.clipboardData?.items
+  if (!items) return
+  for (const item of items) {
+    if (item.type.startsWith('image/')) {
+      e.preventDefault()
+      const file = item.getAsFile()
+      if (file) uploadPendingImage(file)
+    }
+  }
+}
+
 onMounted(() => {
   window.addEventListener('keydown', handleKeydown)
+  document.addEventListener('paste', handlePaste)
   if (isLoggedIn.value) {
     loadWorkspaceData()
   } else {
@@ -2008,6 +2124,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   activeAbortController?.abort()
   window.removeEventListener('keydown', handleKeydown)
+  document.removeEventListener('paste', handlePaste)
   if (animationFrameId) cancelAnimationFrame(animationFrameId)
   window.removeEventListener('resize', resizeCanvas)
 })

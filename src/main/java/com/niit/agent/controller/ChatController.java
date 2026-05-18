@@ -77,6 +77,7 @@ public class ChatController {
             @RequestParam String content,
             @RequestParam(required = false) String modelName,
             @RequestParam(required = false) String skillId,
+            @RequestParam(required = false) String imageIds,
             HttpServletRequest request) {
 
         SseEmitter emitter = new SseEmitter(180000L);
@@ -105,6 +106,13 @@ public class ChatController {
             return emitter;
         }
 
+        Long currentUserId = null;
+        Object userIdAttr = request.getAttribute("userId");
+        if (userIdAttr != null) {
+            currentUserId = Long.parseLong(String.valueOf(userIdAttr));
+        }
+        List<String> imageDataUrls = parseAndLoadImages(imageIds, currentUserId);
+
         ScheduledFuture<?> heartbeat = heartbeatExecutor.scheduleAtFixedRate(() -> {
             try {
                 emitter.send(SseEmitter.event().comment("heartbeat"));
@@ -113,7 +121,7 @@ public class ChatController {
             }
         }, 15, 15, TimeUnit.SECONDS);
 
-        executeStreamChat(emitter, sessionId, modelName, effectiveSkillId, heartbeat, request, "会话");
+        executeStreamChat(emitter, sessionId, modelName, effectiveSkillId, heartbeat, request, "会话", imageDataUrls);
 
         emitter.onTimeout(() -> {
             heartbeat.cancel(true);
@@ -146,7 +154,7 @@ public class ChatController {
         }
         cacheService.evictMessages(sessionId);
 
-        executeStreamChat(emitter, sessionId, modelName, effectiveSkillId, null, request, "重新生成");
+        executeStreamChat(emitter, sessionId, modelName, effectiveSkillId, null, request, "重新生成", List.of());
 
         return emitter;
     }
@@ -212,11 +220,15 @@ public class ChatController {
 
     private void executeStreamChat(SseEmitter emitter, Long sessionId, String modelName,
                                    String effectiveSkillId, ScheduledFuture<?> heartbeat,
-                                   HttpServletRequest request, String actionName) {
+                                   HttpServletRequest request, String actionName,
+                                   List<String> imageDataUrls) {
         CompletableFuture.runAsync(() -> {
             try {
                 long contextStart = System.currentTimeMillis();
                 List<Map<String, Object>> context = memoryService.buildContext(sessionId, effectiveSkillId);
+                if (imageDataUrls != null && !imageDataUrls.isEmpty()) {
+                    injectImagesIntoContext(context, imageDataUrls);
+                }
                 long contextTime = System.currentTimeMillis() - contextStart;
                 log.info("会话[{}]上下文构建完成, 消息数: {}, 耗时: {}ms", sessionId, context.size(), contextTime);
                 doStreamResponse(emitter, sessionId, modelName, context, buildChatOptions(context),
@@ -478,6 +490,53 @@ public class ChatController {
         }
     }
 
+    private static final int MAX_IMAGES_PER_REQUEST = 10;
+
+    private List<String> parseAndLoadImages(String imageIds, Long currentUserId) {
+        if (imageIds == null || imageIds.isBlank()) {
+            return List.of();
+        }
+        String[] parts = imageIds.split(",");
+        if (parts.length > MAX_IMAGES_PER_REQUEST) {
+            log.warn("图片数量超过限制: {} > {}", parts.length, MAX_IMAGES_PER_REQUEST);
+        }
+        int limit = Math.min(parts.length, MAX_IMAGES_PER_REQUEST);
+        List<String> dataUrls = new ArrayList<>();
+        for (int i = 0; i < limit; i++) {
+            String part = parts[i].trim();
+            try {
+                Long attachmentId = Long.parseLong(part);
+                String dataUrl = chatAttachmentService.getImageBase64(attachmentId, currentUserId);
+                dataUrls.add(dataUrl);
+            } catch (Exception e) {
+                log.warn("加载图片失败: imageId={}, error={}", part, e.getMessage());
+            }
+        }
+        return dataUrls;
+    }
+
+    private void injectImagesIntoContext(List<Map<String, Object>> context, List<String> imageDataUrls) {
+        for (int i = context.size() - 1; i >= 0; i--) {
+            Map<String, Object> msg = context.get(i);
+            if ("user".equals(msg.get("role"))) {
+                Object contentObj = msg.get("content");
+                String textContent = contentObj instanceof String ? (String) contentObj : "";
+
+                List<Map<String, Object>> contentParts = new ArrayList<>();
+                if (!textContent.isBlank()) {
+                    contentParts.add(Map.of("type", "text", "text", textContent));
+                }
+                for (String dataUrl : imageDataUrls) {
+                    contentParts.add(Map.of(
+                            "type", "image_url",
+                            "image_url", Map.of("url", dataUrl)));
+                }
+                msg.put("content", contentParts);
+                break;
+            }
+        }
+    }
+
     private void sendError(SseEmitter emitter, String message) {
         try {
             Result<Void> result = Result.fail(message);
@@ -517,7 +576,11 @@ public class ChatController {
         String latestUserMsg = null;
         for (int i = context.size() - 1; i >= 0; i--) {
             if ("user".equals(context.get(i).get("role"))) {
-                latestUserMsg = (String) context.get(i).get("content");
+                Object content = context.get(i).get("content");
+                if (!(content instanceof String)) {
+                    return false;
+                }
+                latestUserMsg = (String) content;
                 break;
             }
         }
