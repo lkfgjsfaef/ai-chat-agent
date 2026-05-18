@@ -241,14 +241,18 @@ public class MemoryServiceImpl implements MemoryService {
 
         final String retrievalQuery;
         final List<String> retrievalQueries;
+        final CompletableFuture<List<String>> expansionFuture;
         final String ragCacheKey;
         if (ragDecision.enabled()) {
             retrievalQuery = buildRetrievalQuery(recentMessages, summary);
-            retrievalQueries = buildRetrievalQueries(retrievalQuery, latestUserQuestion, recentMessages, summary);
+            RetrievalQueryPlan plan = buildRetrievalQueries(retrievalQuery, latestUserQuestion, recentMessages, summary);
+            retrievalQueries = plan.baseQueries();
+            expansionFuture = plan.expansionFuture();
             ragCacheKey = buildRagCacheKey(sessionId, retrievalQueries, summary, recentMessages, knowledgeScopeStats);
         } else {
             retrievalQuery = "";
             retrievalQueries = List.of();
+            expansionFuture = CompletableFuture.completedFuture(List.of());
             ragCacheKey = "";
         }
 
@@ -256,7 +260,7 @@ public class MemoryServiceImpl implements MemoryService {
                 && (!retrievalQuery.isEmpty() || RagDecision.SCOPE_FULL.equals(ragDecision.retrievalScope()))) {
             try {
                 CompletableFuture.supplyAsync(() -> {
-                    executeRagPipeline(context, sessionId, session, latestUserQuestion, retrievalQuery, retrievalQueries, ragDecision, ragCacheKey);
+                    executeRagPipeline(context, sessionId, session, latestUserQuestion, retrievalQuery, retrievalQueries, expansionFuture, ragDecision, ragCacheKey);
                     return true;
                 }, ragExecutor)
                 .orTimeout(ragPipelineTimeoutSeconds, TimeUnit.SECONDS)
@@ -266,7 +270,7 @@ public class MemoryServiceImpl implements MemoryService {
                 recordRagMetrics(ragDecision, "timeout", false);
             }
         } else {
-            executeRagPipeline(context, sessionId, session, latestUserQuestion, retrievalQuery, retrievalQueries, ragDecision, ragCacheKey);
+            executeRagPipeline(context, sessionId, session, latestUserQuestion, retrievalQuery, retrievalQueries, expansionFuture, ragDecision, ragCacheKey);
         }
 
         for (ChatMessage msg : recentMessages) {
@@ -314,8 +318,9 @@ public class MemoryServiceImpl implements MemoryService {
         }
     }
 
-    private void executeRagPipeline(List<Map<String, Object>> context, Long sessionId, ChatSession session, 
-                                    String latestUserQuestion, String retrievalQuery, List<String> retrievalQueries, 
+    private void executeRagPipeline(List<Map<String, Object>> context, Long sessionId, ChatSession session,
+                                    String latestUserQuestion, String retrievalQuery, List<String> retrievalQueries,
+                                    CompletableFuture<List<String>> expansionFuture,
                                     RagDecision ragDecision, String ragCacheKey) {
         long ragStartNanos = System.nanoTime();
         int vectorCandidateCount = 0;
@@ -389,6 +394,41 @@ public class MemoryServiceImpl implements MemoryService {
                     CompletableFuture.allOf(vectorFuture, keywordFuture).join();
                     List<RetrievalCandidate> vectorCandidates = vectorFuture.join();
                     List<RetrievalCandidate> keywordCandidates = keywordFuture.join();
+
+                    // 等待查询扩展完成，补充扩展查询的搜索结果
+                    List<String> expandedQueries;
+                    try {
+                        expandedQueries = expansionFuture.get(2, TimeUnit.SECONDS);
+                    } catch (Exception e) {
+                        expandedQueries = List.of();
+                    }
+                    if (!expandedQueries.isEmpty()) {
+                        List<String> novelExpanded = expandedQueries.stream()
+                                .filter(q -> !retrievalQueries.contains(q))
+                                .toList();
+                        if (!novelExpanded.isEmpty()) {
+                            CompletableFuture<List<RetrievalCandidate>> expandedVectorFuture = CompletableFuture
+                                    .supplyAsync(() -> searchVectorKnowledge(novelExpanded, session, effVectorQuota, effSessionQuota, effUserQuota, effGlobalQuota), ragExecutor)
+                                    .completeOnTimeout(Collections.emptyList(), 2, TimeUnit.SECONDS)
+                                    .exceptionally(ex -> {
+                                        log.warn("扩展查询向量检索失败: {}", ex.getMessage());
+                                        return Collections.emptyList();
+                                    });
+                            CompletableFuture<List<RetrievalCandidate>> expandedKeywordFuture = CompletableFuture
+                                    .supplyAsync(() -> searchKeywordKnowledge(novelExpanded, session, effKeywordQuota, effSessionQuota, effUserQuota, effGlobalQuota), ragExecutor)
+                                    .completeOnTimeout(Collections.emptyList(), 2, TimeUnit.SECONDS)
+                                    .exceptionally(ex -> {
+                                        log.warn("扩展查询BM25检索失败: {}", ex.getMessage());
+                                        return Collections.emptyList();
+                                    });
+                            CompletableFuture.allOf(expandedVectorFuture, expandedKeywordFuture).join();
+                            vectorCandidates = new ArrayList<>(vectorCandidates);
+                            vectorCandidates.addAll(expandedVectorFuture.join());
+                            keywordCandidates = new ArrayList<>(keywordCandidates);
+                            keywordCandidates.addAll(expandedKeywordFuture.join());
+                            log.info("扩展查询完成, 新增向量候选={}, BM25候选={}", expandedVectorFuture.join().size(), expandedKeywordFuture.join().size());
+                        }
+                    }
                     vectorCandidateCount = vectorCandidates.size();
                     keywordCandidateCount = keywordCandidates.size();
 
@@ -889,33 +929,39 @@ public class MemoryServiceImpl implements MemoryService {
         return queryBuilder.toString();
     }
 
-    private List<String> buildRetrievalQueries(String retrievalQuery, String latestUserQuestion,
-                                               List<ChatMessage> recentMessages, ChatSummary summary) {
+    private RetrievalQueryPlan buildRetrievalQueries(String retrievalQuery, String latestUserQuestion,
+                                                      List<ChatMessage> recentMessages, ChatSummary summary) {
         LinkedHashSet<String> queries = new LinkedHashSet<>();
         addQueryVariant(queries, latestUserQuestion);
         addQueryVariant(queries, retrievalQuery);
+        CompletableFuture<List<String>> expansionFuture = CompletableFuture.completedFuture(List.of());
+
         if (ragQueryExpansionEnabled) {
-            List<String> expandedQueries = getCachedOrFreshExpansion(latestUserQuestion, recentMessages, summary);
-            for (String expandedQuery : expandedQueries) {
-                addQueryVariant(queries, expandedQuery);
-                if (queries.size() >= Math.max(2, ragQueryExpansionVariants + 2)) {
-                    break;
+            int cacheKey = Objects.hash(latestUserQuestion);
+            CachedExpansion cached = expansionCache.get(cacheKey);
+            if (cached != null && (System.currentTimeMillis() - cached.createdAtMs) < EXPANSION_CACHE_TTL_MS) {
+                for (String expandedQuery : cached.queries()) {
+                    addQueryVariant(queries, expandedQuery);
                 }
+            } else {
+                expansionFuture = CompletableFuture.supplyAsync(
+                        () -> expandAndCache(latestUserQuestion, recentMessages, summary), ragExecutor);
             }
         }
-        return queries.stream()
+
+        List<String> baseQueries = queries.stream()
                 .limit(Math.max(2, ragQueryExpansionVariants + 2L))
                 .toList();
+        return new RetrievalQueryPlan(baseQueries, expansionFuture);
     }
 
-    private List<String> getCachedOrFreshExpansion(String latestUserQuestion, List<ChatMessage> recentMessages, ChatSummary summary) {
-        int cacheKey = Objects.hash(latestUserQuestion);
-        CachedExpansion cached = expansionCache.get(cacheKey);
-        if (cached != null && (System.currentTimeMillis() - cached.createdAtMs) < EXPANSION_CACHE_TTL_MS) {
-            log.debug("命中查询扩展缓存: question={}, queries={}", RetrievalUtil.summarizeQuestion(latestUserQuestion), cached.queries());
-            return cached.queries();
+    private List<String> expandAndCache(String latestUserQuestion, List<ChatMessage> recentMessages, ChatSummary summary) {
+        List<String> expanded = expandQueryVariantsByLlm(latestUserQuestion, recentMessages, summary);
+        if (!expanded.isEmpty()) {
+            int cacheKey = Objects.hash(latestUserQuestion);
+            expansionCache.put(cacheKey, new CachedExpansion(expanded, System.currentTimeMillis()));
         }
-        return expandQueryVariantsByLlm(latestUserQuestion, recentMessages, summary);
+        return expanded;
     }
 
     private void addQueryVariant(LinkedHashSet<String> queries, String query) {
@@ -1570,4 +1616,6 @@ public class MemoryServiceImpl implements MemoryService {
     }
 
     private record CachedExpansion(List<String> queries, long createdAtMs) {}
+
+    private record RetrievalQueryPlan(List<String> baseQueries, CompletableFuture<List<String>> expansionFuture) {}
 }

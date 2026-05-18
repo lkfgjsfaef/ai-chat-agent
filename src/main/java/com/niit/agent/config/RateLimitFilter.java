@@ -13,10 +13,11 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import redis.clients.jedis.UnifiedJedis;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+
 import java.io.IOException;
 import java.time.Duration;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 @Slf4j
 @Component
@@ -32,7 +33,10 @@ public class RateLimitFilter implements Filter {
             return {current, ttl}
             """;
 
-    private final Map<String, Bucket> localBuckets = new ConcurrentHashMap<>();
+    private final Cache<String, Bucket> localBuckets = Caffeine.newBuilder()
+            .expireAfterAccess(Duration.ofMinutes(5))
+            .maximumSize(10_000)
+            .build();
     private final JwtUtil jwtUtil;
     private final UnifiedJedis unifiedJedis;
 
@@ -154,7 +158,7 @@ public class RateLimitFilter implements Filter {
     }
 
     private RateLimitDecision tryConsumeLocal(String key, RateLimitPolicy policy) {
-        Bucket bucket = localBuckets.computeIfAbsent(key, k -> createBucket(policy));
+        Bucket bucket = localBuckets.get(key, k -> createBucket(policy));
         long availableBefore = bucket.getAvailableTokens();
         boolean allowed = bucket.tryConsume(1);
         long remaining = allowed ? Math.max(bucket.getAvailableTokens(), 0) : Math.max(availableBefore, 0);
