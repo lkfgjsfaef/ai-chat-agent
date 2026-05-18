@@ -58,6 +58,10 @@ ai:
       enabled: true
     vector-search-top-k: 20
     pipeline-timeout-seconds: 4
+    broad-top-k: 12
+    broad-vector-quota: 12
+    broad-keyword-quota: 12
+    full-max-chars: 20000
     chunk-attribution-ttl-minutes: 5
     query-expansion:
       enabled: true
@@ -68,6 +72,10 @@ ai:
       session-quota: 4
       user-quota: 3
       global-quota: 2
+    broad-scope:
+      session-quota: 8
+      user-quota: 6
+      global-quota: 4
     vector-quota: 6
     keyword-quota: 6
     top-k: 4

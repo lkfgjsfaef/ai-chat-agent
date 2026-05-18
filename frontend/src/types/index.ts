@@ -67,8 +67,25 @@ export interface QueueStatus {
 
 export interface KnowledgeAttachment {
   id: number
-  fileName: string
   sessionId?: number
+  userId?: number
+  scope: string
+  fileName: string
+  fileSize: number
+  fileType?: string
+  extractedText?: string
+  createTime?: string
+  chunkCount?: number
+  canDelete?: boolean
+}
+
+export interface KnowledgeAttachmentPage {
+  current: number
+  size: number
+  total: number
+  pages: number
+  records: KnowledgeAttachment[]
+  scopeStats: Record<string, number>
 }
 
 export interface ApiResponse<T = unknown> {

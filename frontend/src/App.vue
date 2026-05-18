@@ -113,6 +113,7 @@
           </div>
         </div>
         <el-button class="new-chat-btn" type="primary" @click="createNewSession" :icon="Plus">新建对话</el-button>
+        <el-button class="knowledge-btn" :class="{ active: currentView === 'knowledge' }" @click="switchToKnowledgeView" :icon="Upload">知识库</el-button>
       </div>
       <div class="sidebar-search">
         <el-input
@@ -334,7 +335,122 @@
         </div>
       </div>
 
-      <div v-if="!currentSessionId" class="empty-chat">
+      <div v-if="currentView === 'knowledge'" class="knowledge-panel">
+        <div class="knowledge-header">
+          <div class="knowledge-title-row">
+            <h3>知识库管理</h3>
+            <el-button type="primary" @click="openKnowledgeUpload" :icon="Upload">上传文件</el-button>
+          </div>
+          <div class="knowledge-stats" v-if="Object.keys(knowledgeScopeStats).length > 0">
+            <span class="knowledge-stat-item">
+              会话知识: <strong>{{ knowledgeScopeStats.session || 0 }}</strong>
+            </span>
+            <span class="knowledge-stat-item">
+              用户知识: <strong>{{ knowledgeScopeStats.user || 0 }}</strong>
+            </span>
+            <span class="knowledge-stat-item">
+              全局知识: <strong>{{ knowledgeScopeStats.global || 0 }}</strong>
+            </span>
+          </div>
+          <div class="knowledge-search">
+            <el-input
+              v-model="knowledgeSearchKeyword"
+              placeholder="搜索文件..."
+              prefix-icon="Search"
+              clearable
+              @input="debounceLoadKnowledgeFiles"
+              size="small"
+              style="max-width: 300px"
+            />
+          </div>
+        </div>
+
+        <el-table
+          :data="knowledgeFiles"
+          v-loading="knowledgeLoading"
+          empty-text="知识库中暂无文件，点击上方按钮上传"
+          class="knowledge-table"
+          stripe
+        >
+          <el-table-column prop="fileName" label="文件名" min-width="200">
+            <template #default="{ row }">
+              <span class="knowledge-file-name">📄 {{ row.fileName }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="scope" label="作用域" width="90">
+            <template #default="{ row }">
+              <el-tag :type="scopeTagType(row.scope)" size="small">{{ scopeLabel(row.scope) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="chunkCount" label="分块数" width="80" align="center" />
+          <el-table-column label="大小" width="100">
+            <template #default="{ row }">
+              {{ formatFileSize(row.fileSize) }}
+            </template>
+          </el-table-column>
+          <el-table-column prop="createTime" label="上传时间" width="170">
+            <template #default="{ row }">
+              {{ row.createTime || '-' }}
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="100" fixed="right">
+            <template #default="{ row }">
+              <el-button
+                v-if="row.canDelete"
+                size="small"
+                type="danger"
+                text
+                @click="handleDeleteKnowledgeFile(row.id, row.fileName)"
+              >
+                删除
+              </el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <div class="knowledge-pagination" v-if="knowledgePagination.total > knowledgePagination.size">
+          <el-pagination
+            v-model:current-page="knowledgePagination.current"
+            :page-size="knowledgePagination.size"
+            :total="knowledgePagination.total"
+            layout="prev, pager, next"
+            @current-change="loadKnowledgeFiles"
+          />
+        </div>
+      </div>
+
+      <el-dialog v-model="knowledgeUploadDialogVisible" title="上传文件到知识库" width="480px">
+        <el-form label-width="80px">
+          <el-form-item label="作用域">
+            <el-radio-group v-model="knowledgeUploadScope">
+              <el-radio label="user">用户知识（所有对话可见）</el-radio>
+              <el-radio label="session">会话知识（仅当前对话可见）</el-radio>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item v-if="knowledgeUploadScope === 'session'" label="目标会话">
+            <el-select v-model="knowledgeUploadSessionId" placeholder="选择会话" style="width: 100%">
+              <el-option
+                v-for="s in sessions"
+                :key="s.id"
+                :label="s.title"
+                :value="s.id"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="选择文件">
+            <input type="file" @change="handleKnowledgeUpload" :disabled="knowledgeUploading" />
+            <div v-if="knowledgeUploading" style="margin-top: 8px; color: var(--el-color-primary);">
+              正在上传并解析文件...
+            </div>
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button @click="knowledgeUploadDialogVisible = false">取消</el-button>
+          <el-button type="primary" @click="knowledgeUploadDialogVisible = false">完成</el-button>
+        </template>
+      </el-dialog>
+
+      <div v-if="!currentSessionId && currentView !== 'knowledge'" class="empty-chat">
         <div class="empty-chat-content">
           <div class="empty-chip-row">
             <span class="empty-chip">Hybrid RAG</span>
@@ -461,8 +577,10 @@
         <div v-if="pendingAttachments.length > 0" class="attachment-preview-area">
           <div v-for="(file, index) in pendingAttachments" :key="index" class="attachment-tag">
             <span class="attachment-name">📎 {{ file.fileName }}</span>
+            <span v-if="!isStreaming" class="attachment-summarize-btn" @click="summarizeAttachment(index)">AI总结</span>
             <el-icon class="remove-attachment" @click="removeAttachment(index)"><Close /></el-icon>
           </div>
+          <div v-if="summarizeProgress" class="summarize-progress">{{ summarizeProgress }}</div>
         </div>
         <div class="composer-status-row">
           <div class="composer-status-group">
@@ -556,7 +674,7 @@
 import { ref, nextTick, onMounted, onBeforeUnmount, computed, watch } from 'vue'
 import { Plus, RefreshRight, CopyDocument, Promotion, Delete, Edit, Download, Refresh, Search, Expand, Upload, Paperclip, Close } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { login, register, createSession, listSessions, deleteSession, listMessages, listModels, regenerate, renameSession, updateSystemPrompt, updateMessage, deleteAfterMessage, searchSessions, searchMessages, getUserProfile, updateUserProfile, uploadAvatar, updateFeedback, listTags, createTag, deleteTag, addTagToSession, removeTagFromSession, listTemplates, uploadFile, listSkills, updateSessionSkill } from './chatApi'
+import { login, register, createSession, listSessions, deleteSession, listMessages, listModels, regenerate, renameSession, updateSystemPrompt, updateMessage, deleteAfterMessage, searchSessions, searchMessages, getUserProfile, updateUserProfile, uploadAvatar, updateFeedback, listTags, createTag, deleteTag, addTagToSession, removeTagFromSession, listTemplates, uploadFile, listSkills, updateSessionSkill, uploadToKnowledgeBase, listKnowledgeFiles, deleteKnowledgeFile } from './chatApi'
 import { renderMarkdown, escapeHtml } from './utils/markdown'
 
 const DEBOUNCE_DELAY = 300
@@ -581,6 +699,7 @@ const fileInput = ref(null)
 
 const pendingAttachments = ref([])
 const isUploading = ref(false)
+const summarizeProgress = ref('')
 
 const authFeatureItems = [
   '结构化 RAG 检索链路',
@@ -668,6 +787,17 @@ const filteredSessions = computed(() => {
 
 const promptTemplates = ref([])
 const mobileSidebarVisible = ref(false)
+
+const currentView = ref('chat')
+const knowledgeFiles = ref([])
+const knowledgePagination = ref({ current: 1, size: 10, total: 0, pages: 0 })
+const knowledgeScopeStats = ref({})
+const knowledgeSearchKeyword = ref('')
+const knowledgeUploadDialogVisible = ref(false)
+const knowledgeUploadScope = ref('user')
+const knowledgeUploadSessionId = ref(null)
+const knowledgeUploading = ref(false)
+const knowledgeLoading = ref(false)
 
 const currentSession = computed(() => sessions.value.find(session => session.id === currentSessionId.value) || null)
 
@@ -896,6 +1026,44 @@ async function handleFileUpload(e) {
 
 function removeAttachment(index) {
   pendingAttachments.value.splice(index, 1)
+}
+
+async function summarizeAttachment(index) {
+  const file = pendingAttachments.value[index]
+  if (!file || !file.id || !currentSessionId.value) return
+  if (isStreaming.value) return
+
+  const fileName = file.fileName
+  pendingAttachments.value.splice(index, 1)
+  summarizeProgress.value = ''
+
+  messages.value.push({ id: Date.now(), sessionId: currentSessionId.value, role: 'user', content: '请总结文件：' + fileName })
+  nextTick(scrollToBottom)
+
+  isStreaming.value = true
+  streamingText.value = ''
+  streamingReasoningText.value = ''
+  reasoningExpanded.value = false
+  reasoningFinished.value = false
+  queueStatus.value = null
+
+  const token = localStorage.getItem('token')
+  try {
+    const response = await fetch('/chat/summarize-file', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId: currentSessionId.value,
+        attachmentId: file.id,
+        modelName: currentModel.value
+      })
+    })
+    if (!response.ok) throw new Error('HTTP ' + response.status)
+    await consumeSseStream(response)
+  } catch (err) {
+    ElMessage.error('文件总结失败: ' + err.message)
+    resetStreamingState()
+  }
 }
 
 const debouncedSearch = debounce(async () => {
@@ -1162,6 +1330,7 @@ async function createNewSession() {
   try {
     const res = await createSession({ title: '新对话', skillId: newSessionSkillId.value || null })
     if (res.code === 200) {
+      currentView.value = 'chat'
       sessions.value.unshift(res.data)
       currentSessionId.value = res.data.id
       sessionSkillId.value = res.data.skillId || ''
@@ -1173,6 +1342,7 @@ async function createNewSession() {
 }
 
 async function switchSession(sessionId) {
+  currentView.value = 'chat'
   currentSessionId.value = sessionId
   mobileSidebarVisible.value = false
   sessionSkillId.value = sessions.value.find(session => session.id === sessionId)?.skillId || ''
@@ -1292,6 +1462,7 @@ async function quickChat(text) {
         skillId: newSessionSkillId.value || null
       })
       if (res.code === 200) {
+        currentView.value = 'chat'
         sessions.value.unshift(res.data)
         currentSessionId.value = res.data.id
         sessionSkillId.value = res.data.skillId || ''
@@ -1414,6 +1585,7 @@ function resetStreamingState() {
     reasoningRenderTimer = null
   }
   queueStatus.value = null
+  summarizeProgress.value = ''
   isStreaming.value = false
   isReconnecting.value = false
   pendingMessage.value = null
@@ -1460,6 +1632,15 @@ function handleStreamPayload(eventName, eventData) {
 
   if (eventName === 'queue_status') {
     handleQueueStatusPayload(tryParseJson(eventData))
+    nextTick(scrollToBottom)
+    return false
+  }
+
+  if (eventName === 'summarize_progress') {
+    const progressData = tryParseJson(eventData)
+    if (progressData && progressData.message) {
+      summarizeProgress.value = progressData.message
+    }
     nextTick(scrollToBottom)
     return false
   }
@@ -1688,6 +1869,109 @@ async function handleFeedback(msg, type) {
 
 function scrollToBottom() {
   if (messagesRef.value) messagesRef.value.scrollTop = messagesRef.value.scrollHeight
+}
+
+function switchToKnowledgeView() {
+  currentView.value = 'knowledge'
+  currentSessionId.value = null
+  loadKnowledgeFiles(1)
+}
+
+function switchToChatView() {
+  currentView.value = 'chat'
+}
+
+const debounceLoadKnowledgeFiles = debounce(() => loadKnowledgeFiles(1), DEBOUNCE_DELAY)
+
+async function loadKnowledgeFiles(page = 1) {
+  knowledgeLoading.value = true
+  try {
+    const res = await listKnowledgeFiles({
+      current: page,
+      size: knowledgePagination.value.size,
+      keyword: knowledgeSearchKeyword.value || undefined
+    })
+    if (res.code === 200 && res.data) {
+      knowledgeFiles.value = res.data.records || []
+      knowledgePagination.value = {
+        current: res.data.current,
+        size: res.data.size,
+        total: res.data.total,
+        pages: res.data.pages
+      }
+      knowledgeScopeStats.value = res.data.scopeStats || {}
+    }
+  } catch (e) {
+    console.error('加载知识库文件列表失败:', e)
+  }
+  knowledgeLoading.value = false
+}
+
+function openKnowledgeUpload() {
+  knowledgeUploadScope.value = 'user'
+  knowledgeUploadSessionId.value = null
+  knowledgeUploadDialogVisible.value = true
+}
+
+async function handleKnowledgeUpload(e) {
+  const file = e.target.files[0]
+  if (!file) return
+  if (file.size > 10 * 1024 * 1024) {
+    ElMessage.warning('文件大小不能超过 10MB')
+    return
+  }
+  knowledgeUploading.value = true
+  try {
+    const res = await uploadToKnowledgeBase(file, knowledgeUploadScope.value, knowledgeUploadSessionId.value || undefined)
+    if (res.code === 200) {
+      ElMessage.success('文件上传并解析成功')
+      knowledgeUploadDialogVisible.value = false
+      loadKnowledgeFiles(knowledgePagination.value.current)
+    } else {
+      ElMessage.error(res.msg || '文件上传失败')
+    }
+  } catch (err) {
+    console.error('知识库文件上传失败:', err)
+    ElMessage.error('文件上传失败，请稍后重试')
+  }
+  knowledgeUploading.value = false
+  e.target.value = ''
+}
+
+async function handleDeleteKnowledgeFile(attachmentId, fileName) {
+  try {
+    await ElMessageBox.confirm(`确定要删除「${fileName}」吗？删除后所有对话中将无法检索到该文件内容。`, '确认删除', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+    const res = await deleteKnowledgeFile(attachmentId)
+    if (res.code === 200) {
+      ElMessage.success('已删除')
+      loadKnowledgeFiles(knowledgePagination.value.current)
+    } else {
+      ElMessage.error(res.msg || '删除失败')
+    }
+  } catch (e) {
+    if (e !== 'cancel') {
+      ElMessage.error('删除失败')
+    }
+  }
+}
+
+function formatFileSize(bytes) {
+  if (!bytes) return '-'
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+}
+
+function scopeLabel(scope) {
+  return { session: '会话', user: '用户', global: '全局' }[scope] || scope
+}
+
+function scopeTagType(scope) {
+  return { session: '', user: 'success', global: 'warning' }[scope] || ''
 }
 
 onMounted(() => {
@@ -2039,5 +2323,134 @@ onBeforeUnmount(() => {
 }
 :global(html.light) .reasoning-collapsed {
   color: #94a3b8;
+}
+
+.attachment-summarize-btn {
+  font-size: 11px;
+  color: #6366f1;
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  padding: 2px 8px;
+  border-radius: 10px;
+  cursor: pointer;
+  margin-left: 6px;
+  transition: all 0.2s;
+  white-space: nowrap;
+  user-select: none;
+}
+.attachment-summarize-btn:hover {
+  background: rgba(99, 102, 241, 0.16);
+  border-color: rgba(99, 102, 241, 0.4);
+}
+.summarize-progress {
+  font-size: 12px;
+  color: #6366f1;
+  padding: 4px 10px;
+  margin-top: 4px;
+  width: 100%;
+  animation: pulse-text 1.5s ease-in-out infinite;
+}
+@keyframes pulse-text {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+:global(html.light) .attachment-summarize-btn {
+  color: #6366f1;
+  background: rgba(99, 102, 241, 0.06);
+  border-color: rgba(99, 102, 241, 0.15);
+}
+:global(html.light) .attachment-summarize-btn:hover {
+  background: rgba(99, 102, 241, 0.14);
+  border-color: rgba(99, 102, 241, 0.35);
+}
+
+.knowledge-btn {
+  margin-top: 8px;
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  color: rgba(255, 255, 255, 0.65);
+}
+.knowledge-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.85);
+}
+.knowledge-btn.active {
+  background: rgba(129, 140, 248, 0.12);
+  border-color: rgba(129, 140, 248, 0.3);
+  color: #818cf8;
+}
+
+.knowledge-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 24px 32px;
+  overflow-y: auto;
+}
+.knowledge-header {
+  margin-bottom: 20px;
+}
+.knowledge-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.knowledge-title-row h3 {
+  margin: 0;
+  font-size: 20px;
+  color: var(--el-text-color-primary);
+}
+.knowledge-stats {
+  display: flex;
+  gap: 24px;
+  margin-bottom: 16px;
+  padding: 10px 16px;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+.knowledge-stat-item {
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
+.knowledge-stat-item strong {
+  color: var(--el-text-color-primary);
+  margin-left: 4px;
+}
+.knowledge-search {
+  margin-bottom: 4px;
+}
+.knowledge-table {
+  flex: 1;
+  max-height: calc(100vh - 320px);
+}
+.knowledge-file-name {
+  font-size: 14px;
+  font-weight: 500;
+}
+.knowledge-pagination {
+  display: flex;
+  justify-content: center;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+:global(html.light) .knowledge-btn {
+  border-color: rgba(0, 0, 0, 0.06);
+  background: rgba(0, 0, 0, 0.02);
+  color: rgba(0, 0, 0, 0.55);
+}
+:global(html.light) .knowledge-btn:hover {
+  background: rgba(0, 0, 0, 0.04);
+  color: rgba(0, 0, 0, 0.7);
+}
+:global(html.light) .knowledge-btn.active {
+  background: rgba(99, 102, 241, 0.08);
+  border-color: rgba(99, 102, 241, 0.25);
+  color: #6366f1;
 }
 </style>

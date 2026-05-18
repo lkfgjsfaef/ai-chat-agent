@@ -13,4 +13,6 @@ public interface ChatAttachmentService extends IService<ChatAttachment> {
     KnowledgeAttachmentPageVO listAccessibleAttachments(Long currentUserId, boolean admin, String scope,
                                                         Long sessionId, Long targetUserId, String keyword,
                                                         long current, long size);
+
+    String getFullText(Long attachmentId);
 }

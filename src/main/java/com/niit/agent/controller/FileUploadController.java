@@ -123,7 +123,7 @@ public class FileUploadController {
 
     private String resolveScope(String scope, Long sessionId) {
         if (scope == null || scope.isBlank()) {
-            return sessionId != null ? "session" : "global";
+            return sessionId != null ? "session" : "user";
         }
         String normalized = scope.trim().toLowerCase();
         if (!"session".equals(normalized) && !"user".equals(normalized) && !"global".equals(normalized)) {

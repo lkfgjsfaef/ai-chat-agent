@@ -2,7 +2,8 @@ import request from './api'
 import type {
   LoginForm, ApiResponse, LoginResponse, UserProfile,
   SessionTag, ChatSession, ChatMessage, MessageVO,
-  ModelInfo, PromptTemplate, AppSkill, KnowledgeAttachment
+  ModelInfo, PromptTemplate, AppSkill, KnowledgeAttachment,
+  KnowledgeAttachmentPage
 } from './types'
 
 export function login(data: LoginForm): Promise<ApiResponse<LoginResponse>> {
@@ -114,6 +115,27 @@ export function uploadFile(file: File, sessionId?: number): Promise<ApiResponse<
   formData.append('file', file)
   if (sessionId) formData.append('sessionId', String(sessionId))
   return request.post('/upload/file', formData) as Promise<ApiResponse<KnowledgeAttachment>>
+}
+
+export function uploadToKnowledgeBase(file: File, scope?: string, sessionId?: number): Promise<ApiResponse<KnowledgeAttachment>> {
+  const formData = new FormData()
+  formData.append('file', file)
+  if (scope) formData.append('scope', scope)
+  if (sessionId) formData.append('sessionId', String(sessionId))
+  return request.post('/upload/file', formData) as Promise<ApiResponse<KnowledgeAttachment>>
+}
+
+export function listKnowledgeFiles(params: {
+  scope?: string
+  keyword?: string
+  current?: number
+  size?: number
+}): Promise<ApiResponse<KnowledgeAttachmentPage>> {
+  return request.get('/upload/files', { params }) as Promise<ApiResponse<KnowledgeAttachmentPage>>
+}
+
+export function deleteKnowledgeFile(attachmentId: number): Promise<ApiResponse<null>> {
+  return request.delete('/upload/file/' + attachmentId) as Promise<ApiResponse<null>>
 }
 
 export function regenerate(data: { sessionId: number; content: string }): Promise<ApiResponse<unknown>> {
