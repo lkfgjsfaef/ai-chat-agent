@@ -40,7 +40,8 @@ export default defineConfig({
       },
       '/chat': {
         target: 'http://localhost:8080',
-        changeOrigin: true
+        changeOrigin: true,
+        timeout: 180000
       },
       '/message': {
         target: 'http://localhost:8080',

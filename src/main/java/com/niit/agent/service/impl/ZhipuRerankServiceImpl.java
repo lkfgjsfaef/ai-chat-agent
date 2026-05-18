@@ -2,6 +2,8 @@ package com.niit.agent.service.impl;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import com.niit.agent.common.util.ZhipuAuthUtil;
 import com.niit.agent.service.RerankService;
 import lombok.extern.slf4j.Slf4j;
@@ -9,10 +11,12 @@ import okhttp3.*;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
 @Slf4j
@@ -29,10 +33,22 @@ public class ZhipuRerankServiceImpl implements RerankService {
             .connectionPool(new ConnectionPool(20, 3, TimeUnit.MINUTES))
             .build();
 
+    private final Cache<Integer, List<RerankResult>> rerankCache = Caffeine.newBuilder()
+            .expireAfterWrite(Duration.ofMinutes(5))
+            .maximumSize(1000)
+            .build();
+
     @Override
     public List<RerankResult> rerankWithScores(String query, List<String> documents, int topK) {
         if (documents == null || documents.isEmpty() || apiKey == null || apiKey.isEmpty()) {
             return buildFallbackResults(documents, topK);
+        }
+
+        int cacheKey = Objects.hash(query, documents);
+        List<RerankResult> cached = rerankCache.getIfPresent(cacheKey);
+        if (cached != null) {
+            log.debug("命中Reranker缓存: query={}, candidates={}", query, documents.size());
+            return cached.size() <= topK ? cached : cached.subList(0, topK);
         }
 
         try {
@@ -71,6 +87,7 @@ public class ZhipuRerankServiceImpl implements RerankService {
                                 rerankedDocs.add(new RerankResult(documents.get(index), score));
                             }
                         }
+                        rerankCache.put(cacheKey, rerankedDocs);
                         log.info("Rerank 完成, 从 {} 篇文档中重排提取了 {} 篇", documents.size(), rerankedDocs.size());
                         return rerankedDocs;
                     }

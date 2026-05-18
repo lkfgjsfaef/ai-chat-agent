@@ -799,6 +799,8 @@ const knowledgeUploadSessionId = ref(null)
 const knowledgeUploading = ref(false)
 const knowledgeLoading = ref(false)
 
+let activeAbortController = null
+
 const currentSession = computed(() => sessions.value.find(session => session.id === currentSessionId.value) || null)
 
 const currentSessionTitle = computed(() => currentSession.value ? currentSession.value.title : 'AI Chat Workspace')
@@ -1049,6 +1051,8 @@ async function summarizeAttachment(index) {
 
   const token = localStorage.getItem('token')
   try {
+    activeAbortController?.abort()
+    activeAbortController = new AbortController()
     const response = await fetch('/chat/summarize-file', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
@@ -1056,12 +1060,15 @@ async function summarizeAttachment(index) {
         sessionId: currentSessionId.value,
         attachmentId: file.id,
         modelName: currentModel.value
-      })
+      }),
+      signal: activeAbortController.signal
     })
     if (!response.ok) throw new Error('HTTP ' + response.status)
     await consumeSseStream(response)
   } catch (err) {
-    ElMessage.error('文件总结失败: ' + err.message)
+    if (err.name !== 'AbortError') {
+      ElMessage.error('文件总结失败: ' + err.message)
+    }
     resetStreamingState()
   }
 }
@@ -1528,14 +1535,21 @@ async function startStream(text, isRetry = false) {
   if (temporarySkillId.value) params.append('skillId', temporarySkillId.value)
 
   try {
+    activeAbortController?.abort()
+    activeAbortController = new AbortController()
     const response = await fetch(`/chat/stream?${params.toString()}`, {
-      headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'text/event-stream' }
+      headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'text/event-stream' },
+      signal: activeAbortController.signal
     })
     if (!response.ok) throw new Error('HTTP ' + response.status)
     isReconnecting.value = false
     reconnectAttempts.value = 0
     await consumeSseStream(response)
   } catch (err) {
+    if (err.name === 'AbortError') {
+      resetStreamingState()
+      return
+    }
     if (reconnectAttempts.value < MAX_RECONNECT_ATTEMPTS && pendingMessage.value) {
       reconnectAttempts.value++
       isReconnecting.value = true
@@ -1593,6 +1607,8 @@ function resetStreamingState() {
 }
 
 function stopStreaming() {
+  activeAbortController?.abort()
+  activeAbortController = null
   resetStreamingState()
   ElMessage.info('已停止生成')
 }
@@ -1808,15 +1824,20 @@ async function doRegenerate() {
   queueStatus.value = null
   const token = localStorage.getItem('token')
   try {
+    activeAbortController?.abort()
+    activeAbortController = new AbortController()
     const response = await fetch('/chat/regenerate', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
-      body: JSON.stringify({ sessionId: currentSessionId.value, modelName: currentModel.value, skillId: temporarySkillId.value || null })
+      body: JSON.stringify({ sessionId: currentSessionId.value, modelName: currentModel.value, skillId: temporarySkillId.value || null }),
+      signal: activeAbortController.signal
     })
     if (!response.ok) throw new Error('HTTP ' + response.status)
     await consumeSseStream(response)
   } catch (err) {
-    ElMessage.error('重新生成失败: ' + err.message)
+    if (err.name !== 'AbortError') {
+      ElMessage.error('重新生成失败: ' + err.message)
+    }
     resetStreamingState()
   }
 }
@@ -1985,6 +2006,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  activeAbortController?.abort()
   window.removeEventListener('keydown', handleKeydown)
   if (animationFrameId) cancelAnimationFrame(animationFrameId)
   window.removeEventListener('resize', resizeCanvas)
