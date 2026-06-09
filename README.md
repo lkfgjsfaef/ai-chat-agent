@@ -422,6 +422,6 @@ npm run dev
 | Token 计算 | JTokkit |
 | 文档解析 | Apache Tika |
 | 前端 | Vue 3 + TypeScript + Element Plus + Vite |
-![img.png](img.png)
-![img_1.png](img_1.png)
-![img_2.png](img_2.png)
+![img.png](image.png)
+![img_1.png](image_1.png)
+![img_2.png](image_2.png)
