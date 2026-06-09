@@ -15,6 +15,7 @@ export interface UserProfile {
   bio?: string
   theme?: 'dark' | 'light'
   totalTokens?: number
+  hasApiKey?: boolean
 }
 
 export interface ChatSession {
@@ -37,6 +38,7 @@ export interface ChatMessage {
 
 export interface ModelInfo {
   modelName: string
+  supportsVision: boolean
 }
 
 export interface SessionTag {

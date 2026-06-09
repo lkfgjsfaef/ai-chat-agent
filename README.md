@@ -1,67 +1,407 @@
-# 🚀 智能 AI 助手后端系统 (Agent AI Backend)
+# AI Chat Agent — 智能 AI 助手平台
 
-这是一个基于 **Spring Boot 3 + Spring AI** 构建的企业级 AI 智能对话与 Agent 后端系统。项目不仅实现了主流的大模型流式对话（SSE），还深入集成了 **RAG（检索增强生成）**、**Function Calling（工具调用）** 以及**精细化 Token 监控**等前沿架构。
-
----
-
-## 🌟 核心特性与实现细节 (Features & Implementation)
-
-### 1. 🤖 真正的 Agent 智能体架构 (Function Calling)
-- 告别纯对话系统！模型现在可以**自主决定**调用外部 Java 工具来获取实时数据。
-- **内置工具**：
-  - `get_weather`：调用天气服务（模拟）。
-  - `get_current_time`：获取服务器系统时间。
-- **底层实现**：
-  - 采用接口抽象 `ToolHandler`，通过 `ToolRegistry` 自动扫描注册。
-  - 支持**递归流式工具调用**：在 SSE 响应流中截获 `tool_calls`，自动暂停输出，执行本地 Java 方法后，将结果包装为 `tool` 角色无缝发回给大模型继续流式生成。
-  - **防死循环机制**：严格限制最大工具递归调用次数为 5 次，并在 JSON 解析异常时优雅降级。
-
-### 2. 📚 深度调优的企业级 RAG (检索增强生成)
-- 解决了纯向量检索不准、大模型“幻觉”等业务痛点。
-- **多格式文档解析**：集成 `Apache Tika`，支持 PDF、Word、TXT、Excel 等格式的高效文本提取。
-- **科学分块 (Chunking)**：使用 Spring AI 的 `TokenTextSplitter` 策略，按照 Token 大小 (ChunkSize=800) 切分长文档，避免硬截断导致语义丢失。
-- **多路召回 (Hybrid Search)**：
-  - 语义检索：基于 Spring AI `RedisVectorStore`。
-  - 字面检索：基于 `UnifiedJedis` 调用 RediSearch 的 `FT.SEARCH` 实现 BM25 关键字检索。
-  - 系统会将两路召回的结果进行合并去重。
-- **结果重排 (Rerank)**：对接智谱官方 `rerank-1` (BGE-Reranker) 模型，对召回的混合文档进行交叉打分，精准提取 Top 3 相关片段注入上下文。
-- **高可用容错**：向量检索、BM25检索与 Rerank 均拥有独立的异常捕获与降级逻辑（Fallback），即使 Rerank 接口宕机，也能截取前 N 个片段保证问答继续。
-
-### 3. 🧠 智能 Token 精算与上下文管理
-- **Token 级精确计算**：引入 `jtokkit` (基于 CL100K_BASE 编码，适配 GPT-4/GLM-4)，精确计算 Prompt、Completion 以及 Tool 交互的 Token 消耗。
-- **滑动窗口截断机制**：不再简单粗暴地按“轮数”截断对话，而是基于剩余可用 Token 进行精细的滑动窗口截断，最大化保留 System Prompt 和关键的工具交互历史。
-- **自动摘要生成**：当上下文长度逼近模型极限时，系统会在后台自动触发异步任务，提取长对话的精简摘要并注入到后续对话中。
-
-### 4. 📈 运营级管理大盘 (Admin Dashboard)
-- **RBAC 角色权限体系**：集成 JWT 鉴权，支持 `admin` 与 `user` 角色区分，通过拦截器实现接口级权限管控。
-- **全局统计 API**：
-  - `/admin/stats/dashboard`：可视化追踪全站的注册用户数、活跃模型数。
-  - `/admin/users`：分页查看全站用户列表，并按**累计 Token 消耗量**进行排行监控。
-
-### 5. 💬 核心对话与会话管理
-- **多模型无缝切换**：支持 DeepSeek、智谱 GLM 系列 (4.5-air/4.6v/4.7)、OpenAI 等，基于策略模式动态路由。
-- **对话交互增强**：
-  - 支持会话级**自定义系统提示词 (System Prompt)**。
-  - 支持单条消息的重新生成 (Regenerate)。
-  - 支持用户对 AI 的回答进行点赞/踩 (Feedback) 反馈。
-  - 自动根据首轮对话生成会话标题。
-- **多维分类系统**：
-  - 支持自定义**对话标签 (Session Tags)**，一个会话可打多个颜色标签进行分组管理。
-  - 提供快捷的**提示词模板库 (Prompt Templates)**。
-  - 支持历史消息的全文关键字检索。
-
-### 6. ⚡ 高并发与极致网络优化
-- 采用 **Reactor (Flux)** 响应式编程模型，原生支持 SSE (Server-Sent Events) 打字机效果。
-- **OkHttp 连接池预热**：通过 `@PostConstruct` 在系统启动时并发预热 TLS 连接，解决冷启动导致的并发排队，大幅降低 TTFT（首字响应时间）。
-- **统一异常处理**：全局拦截并格式化 REST 和 SSE 流式请求中的异常，确保前端在网络抖动或大模型报错时能瞬间解锁界面。
+基于 Spring Boot 3 + Vue 3 的企业级 AI 对话平台，支持多模型流式对话（SSE）、RAG 检索增强生成、Function Calling 工具调用。
 
 ---
 
-## 🏗️ 架构概览 (Architecture)
+## 目录
 
-```text
+- [第一步：安装 Docker](#第一步安装-docker)
+- [第二步：克隆项目](#第二步克隆项目)
+- [第三步：构建项目](#第三步构建项目)
+- [第四步：填写配置](#第四步填写配置)
+- [第五步：启动服务](#第五步启动服务)
+- [第六步：验证部署](#第六步验证部署)
+- [常见问题](#常见问题)
+- [配置参考](#配置参考)
+- [开发环境](#开发环境)
+- [项目架构](#项目架构)
+
+---
+
+## 第一步：安装 Docker
+
+整个项目的数据库、Redis、后端、前端全部用 Docker 运行。你**不需要**单独安装 MySQL、Redis、JDK、Maven 或 Nginx——只需要一个 Docker。
+
+### Windows
+
+1. 下载 Docker Desktop：[https://www.docker.com/products/docker-desktop/](https://www.docker.com/products/docker-desktop/)
+2. 安装时勾选 **"Use WSL 2 instead of Hyper-V"**（默认已勾选）
+3. 安装完成后重启电脑
+4. 启动 Docker Desktop，任务栏右下角图标变绿即就绪
+5. 打开 PowerShell 验证：
+   ```
+   docker --version
+   docker compose version
+   ```
+   两条命令都输出版本号即可。
+
+### macOS
+
+1. 下载 Docker Desktop：[https://www.docker.com/products/docker-desktop/](https://www.docker.com/products/docker-desktop/)
+   - Apple Silicon（M1/M2/M3）→ 选 **Apple Chip**
+   - Intel 芯片 → 选 **Intel Chip**
+2. 把 Docker.app 拖进 Applications，双击启动
+3. 终端验证：
+   ```
+   docker --version
+   docker compose version
+   ```
+
+### Linux（Ubuntu / Debian / CentOS）
+
+```bash
+# Docker 官方安装脚本（适用于所有主流发行版）
+curl -fsSL https://get.docker.com | bash
+
+# 启动并设为开机自启
+sudo systemctl enable docker
+sudo systemctl start docker
+
+# 验证
+docker --version
+docker compose version
+```
+
+> **国内服务器强烈建议配置镜像加速**，否则拉取镜像会很慢。编辑 `/etc/docker/daemon.json`（没有就新建）：
+> ```json
+> {
+>   "registry-mirrors": [
+>     "https://mirror.ccs.tencentyun.com",
+>     "https://docker.m.daocloud.io"
+>   ]
+> }
+> ```
+> 保存后执行 `sudo systemctl restart docker`。
+
+### 阿里云服务器
+
+推荐用阿里云**轻量应用服务器**，性价比高：
+
+1. [https://swas.console.aliyun.com/](https://swas.console.aliyun.com/) → 创建实例
+2. 镜像选 **"系统镜像 → Ubuntu 24.04"**
+3. 最低 2 核 2G 即可，约 68 元/月
+4. 购买后 SSH 登录，执行上面 Linux 的安装命令
+
+---
+
+## 第二步：克隆项目
+
+```bash
+git clone <本项目地址>
+cd Agent
+```
+
+克隆后看到的目录结构：
+
+```
+Agent/
+├── docker-compose.yml          # Docker 编排
+├── Dockerfile                  # 后端镜像构建
+├── .env.example                # 环境变量模板
+├── README.md
+├── pom.xml                     # Maven 配置
+├── sql/
+│   └── init.sql.example        # 数据库初始化模板
+├── deploy/
+│   └── nginx-docker.conf       # Nginx 配置
+├── frontend/                   # Vue 3 前端源码
+│   └── src/
+└── src/                        # Spring Boot 后端源码
+    └── main/
+```
+
+> 克隆后**没有** `target/*.jar`、`frontend/dist/`、`.env`、`sql/init.sql`，这些需要下面几步手动构建和创建。
+
+---
+
+## 第三步：构建项目
+
+### 3.1 安装构建工具
+
+构建前端需要 **Node.js 18+**：
+
+- 下载地址：[https://nodejs.org/](https://nodejs.org/) → 选 LTS 版本，一路安装即可
+- Linux 快速安装：`curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt install -y nodejs`
+
+构建后端需要 **JDK 17+** 和 **Maven 3.8+**：
+
+- JDK 17：[https://adoptium.net/download/](https://adoptium.net/download/) → 选 Temurin 17，按系统下载安装
+- Maven：[https://maven.apache.org/download.cgi](https://maven.apache.org/download.cgi) → 下载 Binary zip，解压后把 `bin/` 目录加到系统 PATH 环境变量
+
+验证安装：
+
+```bash
+node --version    # 应输出 v18.x 或以上
+npm --version     # 应输出 9.x 或以上
+java --version    # 应输出 17.x
+mvn --version     # 应输出 3.8.x 或以上
+```
+
+> 如果在服务器上构建不方便，也可以在自己电脑上构建好，然后把 `target/*.jar` 和 `frontend/dist/` 上传到服务器。
+
+### 3.2 构建前端
+
+```bash
+cd frontend
+
+# 安装依赖（只需首次执行）
+npm install
+
+# 构建（输出到 dist/ 目录）
+npm run build
+
+cd ..
+```
+
+### 3.3 构建后端
+
+```bash
+# 在项目根目录执行，跳过测试加快速度
+mvn clean package -DskipTests
+```
+
+构建完成后会生成 `target/Agent-0.0.1-SNAPSHOT.jar`。
+
+---
+
+## 第四步：填写配置
+
+### 4.1 创建 .env 文件
+
+```bash
+cp .env.example .env
+```
+
+用任意文本编辑器打开 `.env`，逐条修改：
+
+```bash
+# MySQL root 密码（自己随便设）
+MYSQL_PASSWORD=123456
+
+# Redis 密码（自己随便设）
+REDIS_PASSWORD=123456
+
+# JWT 签名密钥（随便填一串就行）
+JWT_SECRET=my-super-secret-jwt-key-please-change
+
+# 智谱 API Key（去 https://open.bigmodel.cn/ 注册免费获取）
+ZHIPU_API_KEY=填你的智谱Key
+
+# 用户 Key 加密密钥（随便填一串，用于加密用户自备的 DeepSeek Key）
+APP_API_KEY_SECRET=my-encryption-secret-please-change
+
+# 前端地址（把 IP 换成你服务器的）
+CORS_ORIGINS=http://你的服务器IP:82
+```
+
+> **智谱 API Key 怎么获取？**
+>
+> 1. 打开 [https://open.bigmodel.cn/](https://open.bigmodel.cn/) 注册账号
+> 2. 登录后进入控制台 → API Keys
+> 3. 复制 Key 填入 `.env` 和下面的 `init.sql`
+
+### 4.2 创建数据库初始化脚本
+
+```bash
+cp sql/init.sql.example sql/init.sql
+```
+
+编辑 `sql/init.sql`，找到包含 `glm-4.7`、`glm-4.6v`、`glm-4.5-air` 的 3 行 INSERT 语句，把 `${ZHIPU_API_KEY}` 替换为你的智谱 API Key：
+
+```sql
+-- 替换前（模板）
+INSERT INTO `model_config` VALUES (1, 'glm-4.7', '${ZHIPU_API_KEY}', 'https://open.bigmodel.cn/...', 1, 0, ...);
+INSERT INTO `model_config` VALUES (2, 'glm-4.6v', '${ZHIPU_API_KEY}', 'https://open.bigmodel.cn/...', 1, 1, ...);
+INSERT INTO `model_config` VALUES (3, 'glm-4.5-air', '${ZHIPU_API_KEY}', 'https://open.bigmodel.cn/...', 1, 0, ...);
+
+-- 替换后（把 3 个 ${ZHIPU_API_KEY} 都改成你的真实 Key）
+INSERT INTO `model_config` VALUES (1, 'glm-4.7', '你的真实Key', 'https://open.bigmodel.cn/...', 1, 0, ...);
+INSERT INTO `model_config` VALUES (2, 'glm-4.6v', '你的真实Key', 'https://open.bigmodel.cn/...', 1, 1, ...);
+INSERT INTO `model_config` VALUES (3, 'glm-4.5-air', '你的真实Key', 'https://open.bigmodel.cn/...', 1, 0, ...);
+```
+
+> 3 行都要替换，否则 GLM 模型无法使用。DeepSeek 和 OpenAI 那两行不需要改，它们由用户在前端填写自己的 Key。
+
+---
+
+## 第五步：启动服务
+
+```bash
+# 启动所有服务（首次会自动拉取镜像，需要几分钟）
+docker compose up -d
+
+# 查看容器状态，4 个都应该是 Up
+docker compose ps
+```
+
+正常输出：
+
+```
+NAME             STATUS
+ai-chat-mysql    Up (healthy)
+ai-chat-redis    Up (healthy)
+ai-chat-app      Up
+ai-chat-nginx    Up
+```
+
+`mysql` 和 `redis` 显示 `(healthy)` 说明健康检查通过。`app` 启动需要一两分钟（初始化数据库连接），如果显示 `Up` 就是正常的。
+
+### 常用运维命令
+
+```bash
+docker compose ps              # 查看容器状态
+docker compose logs -f         # 实时查看所有日志，Ctrl+C 退出
+docker compose logs -f app     # 只看后端日志
+docker compose restart app     # 重启后端（改了配置后执行）
+docker compose down            # 停止所有服务
+docker compose up -d           # 重新启动
+docker compose down -v         # 停止并删除所有数据，慎用！
+```
+
+### 开放端口
+
+在云服务器控制台的安全组/防火墙中放行 **82 端口**：
+
+- **阿里云**：控制台 → 安全组 → 添加规则 → 入方向 → TCP 82 → 授权对象 0.0.0.0/0
+- **腾讯云**：控制台 → 防火墙 → 添加规则 → TCP 82
+- **本地电脑**：无需额外操作
+
+> 3306、6379、8083 是容器间内部通信端口，**不需要对外开放**。
+
+---
+
+## 第六步：验证部署
+
+### 1. 检查前端
+
+浏览器打开 `http://你的服务器IP:82`，看到登录/注册页面即为正常。
+
+### 2. 注册并测试对话
+
+1. 点击"注册"，填写用户名和密码
+2. 登录后进入聊天页
+3. 左下角模型选择框选 `glm-4.5-air`
+4. 发送："你好，请做个自我介绍"
+5. 确认收到逐字输出的流式回复
+
+### 3. 测试 DeepSeek 模型
+
+1. 点击右上角头像 → 个人设置
+2. 在 API Key 处填入你的 DeepSeek Key（`sk-` 开头，从 [https://platform.deepseek.com/](https://platform.deepseek.com/) 获取）
+3. 对话页切换模型为 `deepseek`
+4. 正常对话
+
+### 4. 测试知识库上传
+
+1. 左侧菜单点击"知识库"
+2. 上传一个 PDF 或文档
+3. 回到对话页，提问文件相关内容
+4. AI 能结合文件内容回答
+
+---
+
+## 常见问题
+
+| 问题 | 原因 | 解决 |
+|------|------|------|
+| 页面打不开 | 安全组未放行 82 端口 | 去云控制台添加 TCP 82 入站规则 |
+| 注册/登录报错 | MySQL 初始化未完成 | `docker compose logs mysql` 查看日志 |
+| 发送消息一直转圈 | GLM API Key 配错了 | 检查 `.env` 和 `sql/init.sql` 中的 Key |
+| 知识库上传失败 | Redis 不是 Stack 版本 | 确认用的是 `redis/redis-stack-server` 镜像 |
+| `docker compose` 命令不存在 | Docker 版本太老 | 升级 Docker，或改用 `docker-compose`（带横杠） |
+| 容器不断重启 | 端口冲突 | `docker compose logs app` 看报错；改 `docker-compose.yml` 中 ports 左边数字 |
+| 拉镜像很慢 | 国内网络问题 | 参考第一步配置镜像加速器 |
+
+---
+
+## 配置参考
+
+### 模型列表
+
+| 模型 | API Key 来源 | 说明 |
+|------|-------------|------|
+| `glm-4.7` | 服务端配置 | 智谱最新旗舰 |
+| `glm-4.6v` | 服务端配置 | 支持图片识别 |
+| `glm-4.5-air` | 服务端配置 | 轻量快速 |
+| `deepseek` | 用户自备 | 在前端个人设置填写 |
+| `openai` | 用户自备 | 同上 |
+
+### 环境变量
+
+| 变量 | 必填 | 说明 |
+|------|------|------|
+| `MYSQL_PASSWORD` | 是 | MySQL root 密码 |
+| `REDIS_PASSWORD` | 是 | Redis 密码 |
+| `JWT_SECRET` | 是 | JWT 签名密钥 |
+| `ZHIPU_API_KEY` | 是 | 智谱 API Key |
+| `APP_API_KEY_SECRET` | 是 | 用户 Key 加密密钥 |
+| `CORS_ORIGINS` | 是 | 前端地址，如 `http://你的服务器IP:82` |
+
+### 端口映射
+
+| 服务 | 宿主机端口 | 说明 |
+|------|-----------|------|
+| Nginx（前端） | 82 | 浏览器访问 |
+| Spring Boot | 8083 | 后端 API |
+| MySQL | 3306 | 数据库 |
+| Redis Stack | 6379 | 缓存与向量存储 |
+
+> 端口冲突时，修改 `docker-compose.yml` 中 `ports` 冒号**左边**的数字。
+
+### 数据存储
+
+数据保存在 Docker Volume 中，容器删除不影响数据：
+
+| Volume | 存储内容 |
+|--------|---------|
+| `mysql_data` | 用户、会话、消息 |
+| `redis_data` | 向量索引、缓存 |
+| `uploads_data` | 头像文件 |
+
+---
+
+## 开发环境
+
+如果需要本地开发调试：
+
+### 1. 启动基础设施
+
+```bash
+docker compose up -d mysql redis
+```
+
+### 2. 配置 IDE 环境变量
+
+在运行配置中添加：
+
+```
+MYSQL_HOST=localhost;MYSQL_USER=root;MYSQL_PASSWORD=你设的密码;REDIS_HOST=localhost;REDIS_PASSWORD=你设的密码;JWT_SECRET=dev-secret;ZHIPU_API_KEY=你的Key;APP_API_KEY_SECRET=dev-encrypt-key!!;CORS_ORIGINS=http://localhost:5173
+```
+
+### 3. 启动后端
+
+```bash
+mvn spring-boot:run
+```
+
+### 4. 启动前端
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+访问 `http://localhost:5173`。
+
+---
+
+## 项目架构
+
+```
 +-------------------+      +------------------+      +-------------------+
-|  Web Client (Vue) | <--> |  Spring Boot API | <--> | LLM API (GLM/GPT) |
+|  Vue 3 前端       | <--> |  Spring Boot API | <--> | LLM API (GLM/DS) |
 +-------------------+      +------------------+      +-------------------+
                                    |   |
                     +--------------+   +--------------+
@@ -72,55 +412,16 @@
            +------------------+              +-----------------+
 ```
 
-- **核心技术栈**：
-  - 后端框架：Spring Boot 3.2.5
-  - AI 框架：Spring AI (1.0.0-M1)
-  - 数据库与 ORM：MySQL 8.0+ / MyBatis-Plus 3.5.5
-  - 缓存与向量库：Redis Stack (RediSearch / RedisJSON) / Jedis 5.1.0
-  - HTTP 客户端：OkHttp3 + OkHttp-SSE
-  - Token 计算：JTokkit
-  - 文档解析：Apache Tika
-
----
-
-## 🛠️ 快速开始 & 测试指南 (Testing Guide)
-
-为了确保您能完整体验系统的各项高级特性，请按照以下步骤进行测试：
-
-### 1. 环境准备
-1. 确保已启动 **MySQL 8.0+** 并执行了 `sql/init.sql`（系统启动时会自动检查并补全 `user` 表的 `role` 字段）。
-2. 确保已启动 **Redis Stack**（必须包含 RediSearch 和 RedisJSON 模块）。推荐使用 Docker 启动：
-   ```bash
-   docker run -d --name redis-stack -p 6379:6379 redis/redis-stack-server:latest
-   ```
-3. 在 `application.yml` 中配置好智谱 AI 的 `api-key`。
-
-### 2. 测试 Agent 工具调用 (Function Calling)
-1. 启动项目，调用 `POST /user/login` 登录获取 Token。
-2. 开启一个新对话：
-   - **提问**：`"现在几点了？"`
-   - **预期表现**：大模型由于自身没有时间概念，会自动触发 `get_current_time` 工具，系统会在后台打印 `执行工具 [get_current_time]`，随后模型流式输出准确的系统时间。
-   - **提问**：`"北京今天天气怎么样？"`
-   - **预期表现**：模型触发 `get_weather` 工具，返回“北京今天天气晴朗...”。
-
-### 3. 测试 RAG 多路召回与重排 (Hybrid Search & Rerank)
-1. **准备数据**：调用 `POST /chat/attachment/upload` 上传一份文本或 PDF 文件。系统会自动使用 Tika 解析并进行 Token 分块，存入 Redis 向量库。
-2. **提问测试**：根据上传的文档内容提出一个问题。
-3. **预期后台日志**：
-   - 打印 `执行RAG混合检索...`。
-   - 触发 Vector Search 和 BM25 字面检索，并将两路结果合并。
-   - 打印 `Rerank 完成, 从 X 篇文档中重排提取了 3 篇`。
-4. **预期前端表现**：大模型会结合检索到的精准片段（系统提示词中会包含 `[知识库检索结果开始]`）为您生成回答。
-
-### 4. 测试 Token 精算与管理后台
-1. 在 MySQL 数据库中，手动将您登录账号的 `role` 字段修改为 `admin`。
-2. 进行几次对话，确保 `user` 表中的 `total_tokens` 字段由于 `jtokkit` 的精准计算正在累加。
-3. 调用 `GET /admin/stats/dashboard` 接口。
-   - **预期表现**：返回全站的总用户数、总 Token 消耗量以及活跃的模型数量。
-
----
-
-## 📌 未来规划 (Roadmap)
-- 接入更多实用 Agent 工具（如执行本地 Python 代码的沙箱、数据库自然语言查询工具）。
-- 提供前端可视化的大盘监控页面，利用 ECharts 展示 Token 消耗曲线。
-- 支持基于 WebSocket 的双向长连接，优化多设备消息同步。
+| 层级 | 技术 |
+|------|------|
+| 后端框架 | Spring Boot 3.2.5 |
+| AI 框架 | Spring AI 1.0.0-M1 |
+| 数据库 | MySQL 8.0 + MyBatis-Plus |
+| 缓存 / 向量库 | Redis Stack（RediSearch + RedisJSON） |
+| HTTP 客户端 | OkHttp3 + SSE |
+| Token 计算 | JTokkit |
+| 文档解析 | Apache Tika |
+| 前端 | Vue 3 + TypeScript + Element Plus + Vite |
+![img.png](img.png)
+![img_1.png](img_1.png)
+![img_2.png](img_2.png)

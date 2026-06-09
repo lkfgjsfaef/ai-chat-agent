@@ -38,5 +38,15 @@ build/
 ### Trae ###
 .trae/
 
+### Docker secrets ###
+.env
+sql/init.sql
+
 ### Uploads ###
 uploads/
+
+### Screenshots ###
+img*.png
+
+### Backup files ###
+*.backup

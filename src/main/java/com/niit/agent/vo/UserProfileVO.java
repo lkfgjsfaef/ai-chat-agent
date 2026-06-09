@@ -11,4 +11,5 @@ public class UserProfileVO {
     private String bio;
     private String theme;
     private Long totalTokens;
+    private Boolean hasApiKey;
 }

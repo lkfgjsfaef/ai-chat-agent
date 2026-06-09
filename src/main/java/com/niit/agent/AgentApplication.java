@@ -13,6 +13,8 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 public class AgentApplication {
 
     public static void main(String[] args) {
+        System.setProperty("sun.net.inetaddr.ttl", "300");
+        System.setProperty("sun.net.inetaddr.negative.ttl", "30");
         SpringApplication.run(AgentApplication.class, args);
     }
 }

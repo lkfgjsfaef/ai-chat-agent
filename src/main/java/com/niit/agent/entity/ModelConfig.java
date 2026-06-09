@@ -22,5 +22,7 @@ public class ModelConfig {
 
     private Integer status;
 
+    private Boolean supportsVision;
+
     private LocalDateTime createTime;
 }

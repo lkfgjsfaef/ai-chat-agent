@@ -6,7 +6,7 @@
 spring:
   ai:
     zhipuai:
-      api-key: ${ZHIPU_API_KEY:b54f75e62d5345f099aa51764019a92e.ET6EQT55100IcCM0}
+      api-key: ${ZHIPU_API_KEY:your-zhipu-api-key}
     vectorstore:
       redis:
         uri: redis://:${REDIS_PASSWORD:123456}@${REDIS_HOST:localhost}:6379

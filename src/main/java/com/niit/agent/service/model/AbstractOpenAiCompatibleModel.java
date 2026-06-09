@@ -45,15 +45,23 @@ public abstract class AbstractOpenAiCompatibleModel implements AiModel {
                     CipherSuite.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
             )
             .build();
-            
-    private final OkHttpClient client = new OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(180, TimeUnit.SECONDS)
-            .writeTimeout(30, TimeUnit.SECONDS)
-            .connectionPool(new ConnectionPool(100, 3, TimeUnit.MINUTES))
-            .protocols(java.util.Arrays.asList(Protocol.HTTP_2, Protocol.HTTP_1_1))
-            .connectionSpecs(Collections.singletonList(connectionSpec))
-            .build();
+
+    @Autowired
+    private ConnectionPool connectionPool;
+
+    private OkHttpClient client;
+
+    @jakarta.annotation.PostConstruct
+    public void initClient() {
+        this.client = new OkHttpClient.Builder()
+                .connectTimeout(15, TimeUnit.SECONDS)
+                .readTimeout(180, TimeUnit.SECONDS)
+                .writeTimeout(30, TimeUnit.SECONDS)
+                .connectionPool(connectionPool)
+                .protocols(java.util.Arrays.asList(Protocol.HTTP_2, Protocol.HTTP_1_1))
+                .connectionSpecs(Collections.singletonList(connectionSpec))
+                .build();
+    }
 
     @jakarta.annotation.PostConstruct
     public void warmupConnection() {
@@ -82,6 +90,13 @@ public abstract class AbstractOpenAiCompatibleModel implements AiModel {
 
     protected abstract String getActualModelName(String modelName);
 
+    private String resolveApiKey(ChatOptions options) {
+        if (options != null && options.userApiKey() != null) {
+            return options.userApiKey();
+        }
+        return getApiKey();
+    }
+
     @Override
     public Flux<String> streamChat(List<Map<String, Object>> messages, String modelName, ChatOptions options) {
         ChatOptions resolvedOptions = options == null ? ChatOptions.DEFAULT : options;
@@ -100,7 +115,7 @@ public abstract class AbstractOpenAiCompatibleModel implements AiModel {
 
                 Request request = new Request.Builder()
                         .url(getEndpoint())
-                        .addHeader("Authorization", "Bearer " + getApiKey())
+                        .addHeader("Authorization", "Bearer " + resolveApiKey(options))
                         .addHeader("Content-Type", "application/json")
                         .addHeader("Accept", "text/event-stream")
                         .post(RequestBody.create(requestBody, MediaType.parse("application/json")))

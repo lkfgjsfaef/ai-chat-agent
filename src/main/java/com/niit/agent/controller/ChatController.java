@@ -15,6 +15,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -43,6 +44,9 @@ public class ChatController {
     private final ExecutorService chatExecutor;
     private final ExecutorService contextExecutor;
     private final ScheduledExecutorService heartbeatExecutor;
+
+    @Value("${ai.default-model:deepseek}")
+    private String defaultModel;
 
     public ChatController(
             AiModelRouterService aiModelRouterService,
@@ -222,6 +226,7 @@ public class ChatController {
                                    String effectiveSkillId, ScheduledFuture<?> heartbeat,
                                    HttpServletRequest request, String actionName,
                                    List<String> imageDataUrls) {
+        Long currentUserId = parseUserId(request);
         CompletableFuture.runAsync(() -> {
             try {
                 long contextStart = System.currentTimeMillis();
@@ -231,7 +236,8 @@ public class ChatController {
                 }
                 long contextTime = System.currentTimeMillis() - contextStart;
                 log.info("会话[{}]上下文构建完成, 消息数: {}, 耗时: {}ms", sessionId, context.size(), contextTime);
-                doStreamResponse(emitter, sessionId, modelName, context, buildChatOptions(context),
+                doStreamResponse(emitter, sessionId, modelName, context,
+                        buildChatOptions(context, modelName, currentUserId),
                         heartbeat, request, actionName, contextTime);
             } catch (Exception e) {
                 if (heartbeat != null) heartbeat.cancel(true);
@@ -352,7 +358,7 @@ public class ChatController {
                 context.add(Map.of("role", "user", "content",
                     "请总结以下文档《" + fileName + "》的完整内容：\n\n" + fullText));
 
-                var options = new AiModelRouterService.ChatOptions(false, AiModelRouterService.TaskLane.PRIMARY);
+                var options = new AiModelRouterService.ChatOptions(false, AiModelRouterService.TaskLane.PRIMARY, null);
                 doStreamResponse(emitter, sessionId, modelName, context, options,
                         heartbeat, request, "文件总结", 0);
             } catch (Exception e) {
@@ -400,7 +406,7 @@ public class ChatController {
                 context.add(Map.of("role", "user", "content",
                     "请整合以下文档《" + fileName + "》的各部分摘要，生成一份完整的总结：\n\n" + combined));
 
-                var options = new AiModelRouterService.ChatOptions(false, AiModelRouterService.TaskLane.PRIMARY);
+                var options = new AiModelRouterService.ChatOptions(false, AiModelRouterService.TaskLane.PRIMARY, null);
                 doStreamResponse(emitter, sessionId, modelName, context, options,
                         heartbeat, request, "文件总结", 0);
             } catch (Exception e) {
@@ -427,7 +433,7 @@ public class ChatController {
         try {
             List<String> chunks = aiModelRouterService.streamChat(modelName, context,
                     event -> {},
-                    new AiModelRouterService.ChatOptions(false, AiModelRouterService.TaskLane.AUXILIARY))
+                    new AiModelRouterService.ChatOptions(false, AiModelRouterService.TaskLane.AUXILIARY, null))
                 .collectList()
                 .block(Duration.ofSeconds(120));
             if (chunks == null || chunks.isEmpty()) {
@@ -565,11 +571,28 @@ public class ChatController {
         }
     }
 
-    private AiModelRouterService.ChatOptions buildChatOptions(List<Map<String, Object>> context) {
-        if (isSimpleChat(context)) {
-            return new AiModelRouterService.ChatOptions(false, AiModelRouterService.TaskLane.PRIMARY);
+    private AiModelRouterService.ChatOptions buildChatOptions(List<Map<String, Object>> context,
+                                                               String modelName, Long userId) {
+        boolean simple = isSimpleChat(context);
+        String userApiKey = null;
+        if (userId != null) {
+            String effectiveModel = (modelName != null && !modelName.isBlank()) ? modelName : defaultModel;
+            if ("deepseek".equalsIgnoreCase(effectiveModel)) {
+                userApiKey = userService.getDecryptedApiKey(userId);
+            }
         }
-        return AiModelRouterService.ChatOptions.DEFAULT;
+        return new AiModelRouterService.ChatOptions(
+                !simple, simple ? AiModelRouterService.TaskLane.PRIMARY : AiModelRouterService.TaskLane.PRIMARY, userApiKey);
+    }
+
+    private Long parseUserId(HttpServletRequest request) {
+        Object userIdAttr = request.getAttribute("userId");
+        if (userIdAttr == null) return null;
+        try {
+            return Long.parseLong(String.valueOf(userIdAttr));
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     private boolean isSimpleChat(List<Map<String, Object>> context) {

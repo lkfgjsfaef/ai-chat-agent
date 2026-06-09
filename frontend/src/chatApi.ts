@@ -114,7 +114,7 @@ export function uploadFile(file: File, sessionId?: number): Promise<ApiResponse<
   const formData = new FormData()
   formData.append('file', file)
   if (sessionId) formData.append('sessionId', String(sessionId))
-  return request.post('/upload/file', formData) as Promise<ApiResponse<KnowledgeAttachment>>
+  return request.post('/upload/file', formData, { timeout: 300000 }) as Promise<ApiResponse<KnowledgeAttachment>>
 }
 
 export function uploadImage(file: File, sessionId?: number, scope?: string): Promise<ApiResponse<KnowledgeAttachment>> {
@@ -130,7 +130,7 @@ export function uploadToKnowledgeBase(file: File, scope?: string, sessionId?: nu
   formData.append('file', file)
   if (scope) formData.append('scope', scope)
   if (sessionId) formData.append('sessionId', String(sessionId))
-  return request.post('/upload/file', formData) as Promise<ApiResponse<KnowledgeAttachment>>
+  return request.post('/upload/file', formData, { timeout: 300000 }) as Promise<ApiResponse<KnowledgeAttachment>>
 }
 
 export function listKnowledgeFiles(params: {
@@ -155,4 +155,12 @@ export function streamChat(sessionId: number, content: string, modelName?: strin
   if (modelName) params.append('modelName', modelName)
   if (skillId) params.append('skillId', skillId)
   return request.get('/chat/stream', { params }) as Promise<ApiResponse<unknown>>
+}
+
+export function saveApiKey(apiKey: string): Promise<ApiResponse<unknown>> {
+  return request.put('/user/apikey', { apiKey }) as Promise<ApiResponse<unknown>>
+}
+
+export function deleteApiKey(): Promise<ApiResponse<unknown>> {
+  return request.delete('/user/apikey') as Promise<ApiResponse<unknown>>
 }

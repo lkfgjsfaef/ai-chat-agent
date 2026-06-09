@@ -24,6 +24,8 @@ public class User {
 
     private String bio;
 
+    private String encryptedApiKey;
+
     private String theme;
 
     // role: admin / user

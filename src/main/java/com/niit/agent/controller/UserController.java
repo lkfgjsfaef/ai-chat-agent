@@ -23,6 +23,29 @@ public class UserController {
 
     private final UserService userService;
 
+    @PutMapping("/apikey")
+    public Result<Void> saveApiKey(@RequestBody Map<String, String> body, HttpServletRequest request) {
+        Long userId = Long.parseLong(request.getAttribute("userId").toString());
+        String apiKey = body.get("apiKey");
+        try {
+            userService.saveApiKey(userId, apiKey);
+            return Result.ok();
+        } catch (RuntimeException e) {
+            return Result.fail(e.getMessage());
+        }
+    }
+
+    @DeleteMapping("/apikey")
+    public Result<Void> deleteApiKey(HttpServletRequest request) {
+        Long userId = Long.parseLong(request.getAttribute("userId").toString());
+        try {
+            userService.deleteApiKey(userId);
+            return Result.ok();
+        } catch (RuntimeException e) {
+            return Result.fail(e.getMessage());
+        }
+    }
+
     @GetMapping("/profile")
     public Result<UserProfileVO> getProfile(HttpServletRequest request) {
         Long userId = Long.parseLong(request.getAttribute("userId").toString());

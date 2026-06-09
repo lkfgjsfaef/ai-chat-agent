@@ -6,8 +6,10 @@ import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.niit.agent.common.util.ZhipuAuthUtil;
 import com.niit.agent.service.RerankService;
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.*;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -26,12 +28,20 @@ public class ZhipuRerankServiceImpl implements RerankService {
     @Value("${spring.ai.zhipuai.api-key:}")
     private String apiKey;
 
+    @Autowired
+    private ConnectionPool connectionPool;
+
     private final ObjectMapper objectMapper = new ObjectMapper();
-    private final OkHttpClient client = new OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            .connectionPool(new ConnectionPool(20, 3, TimeUnit.MINUTES))
-            .build();
+    private OkHttpClient client;
+
+    @PostConstruct
+    public void initClient() {
+        this.client = new OkHttpClient.Builder()
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .readTimeout(30, TimeUnit.SECONDS)
+                .connectionPool(connectionPool)
+                .build();
+    }
 
     private final Cache<Integer, List<RerankResult>> rerankCache = Caffeine.newBuilder()
             .expireAfterWrite(Duration.ofMinutes(5))

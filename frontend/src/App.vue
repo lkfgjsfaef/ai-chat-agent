@@ -237,6 +237,16 @@
         <el-form-item label="个性签名">
           <el-input v-model="userProfile.bio" type="textarea" placeholder="写点什么..." />
         </el-form-item>
+        <el-form-item label="DeepSeek Key">
+          <div v-if="userProfile.hasApiKey" style="display: flex; align-items: center; gap: 8px;">
+            <el-tag type="success">已配置</el-tag>
+            <el-button type="danger" text size="small" @click="handleDeleteApiKey" :loading="deletingApiKey">移除</el-button>
+          </div>
+          <div v-else style="display: flex; gap: 8px;">
+            <el-input v-model="apiKeyInput" type="password" show-password placeholder="sk-..." />
+            <el-button type="primary" @click="handleSaveApiKey" :loading="savingApiKey">保存</el-button>
+          </div>
+        </el-form-item>
         <el-form-item label="主题偏好">
           <el-radio-group v-model="userProfile.theme">
             <el-radio label="dark">暗色</el-radio>
@@ -573,7 +583,7 @@
         </div>
       </div>
 
-      <div class="chat-input-area">
+      <div v-if="currentView !== 'knowledge'" class="chat-input-area">
         <div v-if="pendingAttachments.length > 0" class="attachment-preview-area">
           <div v-for="(file, index) in pendingAttachments" :key="index" class="attachment-tag">
             <span class="attachment-name">📎 {{ file.fileName }}</span>
@@ -625,10 +635,10 @@
               </el-dropdown-menu>
             </template>
           </el-dropdown>
-          <el-button size="small" type="primary" text class="input-tool-btn" @click="imageInput.click()" :loading="imageUploadCount > 0">
+          <el-button v-if="currentModelSupportsVision" size="small" type="primary" text class="input-tool-btn" @click="imageInput.click()" :loading="imageUploadCount > 0">
             <el-icon><Picture /></el-icon> 图片
           </el-button>
-          <input type="file" ref="imageInput" style="display: none" accept="image/*" multiple @change="handleImageSelect" />
+          <input v-if="currentModelSupportsVision" type="file" ref="imageInput" style="display: none" accept="image/*" multiple @change="handleImageSelect" />
           <el-button size="small" type="primary" text class="input-tool-btn" @click="fileInput.click()" :loading="isUploading">
             <el-icon><Paperclip /></el-icon> 上传文件
           </el-button>
@@ -692,7 +702,7 @@
 import { ref, nextTick, onMounted, onBeforeUnmount, computed, watch } from 'vue'
 import { Plus, RefreshRight, CopyDocument, Promotion, Delete, Edit, Download, Refresh, Search, Expand, Upload, Paperclip, Close, Picture } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { login, register, createSession, listSessions, deleteSession, listMessages, listModels, regenerate, renameSession, updateSystemPrompt, updateMessage, deleteAfterMessage, searchSessions, searchMessages, getUserProfile, updateUserProfile, uploadAvatar, updateFeedback, listTags, createTag, deleteTag, addTagToSession, removeTagFromSession, listTemplates, uploadFile, listSkills, updateSessionSkill, uploadToKnowledgeBase, listKnowledgeFiles, deleteKnowledgeFile, uploadImage } from './chatApi'
+import { login, register, createSession, listSessions, deleteSession, listMessages, listModels, regenerate, renameSession, updateSystemPrompt, updateMessage, deleteAfterMessage, searchSessions, searchMessages, getUserProfile, updateUserProfile, uploadAvatar, updateFeedback, listTags, createTag, deleteTag, addTagToSession, removeTagFromSession, listTemplates, uploadFile, listSkills, updateSessionSkill, uploadToKnowledgeBase, listKnowledgeFiles, deleteKnowledgeFile, uploadImage, saveApiKey, deleteApiKey } from './chatApi'
 import { renderMarkdown, escapeHtml } from './utils/markdown'
 
 const DEBOUNCE_DELAY = 300
@@ -748,6 +758,10 @@ const sessions = ref([])
 const currentSessionId = ref(null)
 const currentModel = ref('glm-4.7')
 const models = ref([])
+const currentModelSupportsVision = computed(() => {
+  const found = models.value.find(m => m.modelName === currentModel.value)
+  return !!(found && found.supportsVision)
+})
 const messages = ref([])
 const inputText = ref('')
 const isStreaming = ref(false)
@@ -789,6 +803,9 @@ const userProfile = ref({
   theme: 'dark'
 })
 const avatarInput = ref(null)
+const apiKeyInput = ref('')
+const savingApiKey = ref(false)
+const deletingApiKey = ref(false)
 
 const allTags = ref([])
 const filterTagId = ref('')
@@ -988,6 +1005,53 @@ async function saveProfile() {
     ElMessage.error('保存失败')
   }
   savingProfile.value = false
+}
+
+async function handleSaveApiKey() {
+  const key = apiKeyInput.value.trim()
+  if (!key) {
+    ElMessage.warning('请输入 API Key')
+    return
+  }
+  savingApiKey.value = true
+  try {
+    const res = await saveApiKey(key)
+    if (res.code === 200) {
+      ElMessage.success('API Key 已保存')
+      userProfile.value.hasApiKey = true
+      apiKeyInput.value = ''
+    } else {
+      ElMessage.error(res.msg || '保存失败')
+    }
+  } catch (e) {
+    ElMessage.error('保存失败')
+  }
+  savingApiKey.value = false
+}
+
+async function handleDeleteApiKey() {
+  try {
+    await ElMessageBox.confirm('确定要移除 DeepSeek API Key 吗？移除后无法使用 DeepSeek 模型。', '确认', {
+      confirmButtonText: '移除',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+  } catch {
+    return
+  }
+  deletingApiKey.value = true
+  try {
+    const res = await deleteApiKey()
+    if (res.code === 200) {
+      ElMessage.success('API Key 已移除')
+      userProfile.value.hasApiKey = false
+    } else {
+      ElMessage.error(res.msg || '移除失败')
+    }
+  } catch (e) {
+    ElMessage.error('移除失败')
+  }
+  deletingApiKey.value = false
 }
 
 function triggerAvatarUpload() {
@@ -1511,6 +1575,7 @@ async function quickChat(text) {
 }
 
 function handleImageSelect(e) {
+  if (!currentModelSupportsVision.value) return
   const files = e.target.files
   if (!files || files.length === 0) return
   for (const file of files) {
@@ -1520,7 +1585,7 @@ function handleImageSelect(e) {
 }
 
 function handleDragOver(e) {
-  if (!e.dataTransfer) return
+  if (!currentModelSupportsVision.value || !e.dataTransfer) return
   const hasImage = Array.from(e.dataTransfer.types).some(t => t === 'Files')
   if (hasImage) {
     isDragOver.value = true
@@ -1535,6 +1600,7 @@ function handleDragLeave(e) {
 
 function handleDrop(e) {
   isDragOver.value = false
+  if (!currentModelSupportsVision.value) return
   const files = e.dataTransfer?.files
   if (!files || files.length === 0) return
   for (const file of files) {
@@ -1847,6 +1913,16 @@ watch(inputText, (val) => {
   debouncedSaveDraft(val)
 })
 
+watch(currentModel, (newModel) => {
+  const found = models.value.find(m => m.modelName === newModel)
+  if (!(found && found.supportsVision) && pendingImages.value.length > 0) {
+    for (const img of pendingImages.value) {
+      if (img.previewUrl) URL.revokeObjectURL(img.previewUrl)
+    }
+    pendingImages.value = []
+  }
+})
+
 watch(streamingText, (val) => {
   if (renderThrottleTimer) clearTimeout(renderThrottleTimer)
   renderThrottleTimer = setTimeout(() => {
@@ -2056,7 +2132,9 @@ async function handleKnowledgeUpload(e) {
     }
   } catch (err) {
     console.error('知识库文件上传失败:', err)
-    ElMessage.error('文件上传失败，请稍后重试')
+    // 可能是超时但后端仍在处理，刷新列表确认
+    ElMessage.warning('文件处理时间较长，正在刷新列表...')
+    setTimeout(() => loadKnowledgeFiles(knowledgePagination.value.current), 2000)
   }
   knowledgeUploading.value = false
   e.target.value = ''
@@ -2099,6 +2177,7 @@ function scopeTagType(scope) {
 }
 
 function handlePaste(e) {
+  if (!currentModelSupportsVision.value) return
   const items = e.clipboardData?.items
   if (!items) return
   for (const item of items) {
@@ -2564,7 +2643,7 @@ onBeforeUnmount(() => {
 }
 .knowledge-table {
   flex: 1;
-  max-height: calc(100vh - 320px);
+  min-height: 400px;
 }
 .knowledge-file-name {
   font-size: 14px;

@@ -15,8 +15,8 @@ public interface AiModel {
 
     String getModelName();
 
-    record ChatOptions(boolean toolsEnabled) {
-        public static final ChatOptions DEFAULT = new ChatOptions(true);
-        public static final ChatOptions NO_TOOLS = new ChatOptions(false);
+    record ChatOptions(boolean toolsEnabled, String userApiKey) {
+        public static final ChatOptions DEFAULT = new ChatOptions(true, null);
+        public static final ChatOptions NO_TOOLS = new ChatOptions(false, null);
     }
 }

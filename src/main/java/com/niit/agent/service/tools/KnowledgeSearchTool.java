@@ -2,15 +2,11 @@ package com.niit.agent.service.tools;
 
 import com.niit.agent.common.constant.Constants;
 import com.niit.agent.common.util.TextUtils;
+import com.niit.agent.service.KnowledgeSearchCore;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
-import org.springframework.ai.vectorstore.SearchRequest;
-import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
-import redis.clients.jedis.UnifiedJedis;
-import redis.clients.jedis.search.Query;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -20,13 +16,7 @@ import java.util.stream.Collectors;
 public class KnowledgeSearchTool implements ToolHandler {
 
     @Autowired
-    private VectorStore vectorStore;
-
-    @Autowired(required = false)
-    private UnifiedJedis unifiedJedis;
-
-    @Value("${spring.ai.vectorstore.redis.index:vector_index}")
-    private String redisIndexName;
+    private KnowledgeSearchCore searchCore;
 
     @Override
     public String getName() {
@@ -105,62 +95,32 @@ public class KnowledgeSearchTool implements ToolHandler {
     private List<SearchResult> hybridSearch(String query, int topK, String scopeFilter) {
         Map<String, SearchResult> merged = new LinkedHashMap<>();
 
-        // Vector search
-        try {
-            List<Document> docs = vectorStore.similaritySearch(
-                    SearchRequest.query(query).withTopK(topK * 2));
-            if (docs != null) {
-                for (Document doc : docs) {
-                    Map<String, Object> meta = doc.getMetadata();
-                    if (meta == null) continue;
-                    String scope = stringValue(meta.get("scope"));
-                    if (scopeFilter != null && !scopeFilter.equals(scope)) continue;
-                    String content = doc.getContent();
-                    if (content == null || content.isBlank()) continue;
-                    String source = buildSourceLabel(meta);
-                    merged.putIfAbsent(content, new SearchResult(content, source, meta));
-                }
-            }
-        } catch (Exception e) {
-            log.warn("KnowledgeSearchTool 向量检索失败: {}", e.getMessage());
+        List<Document> docs = searchCore.vectorSearch(query, topK * 2);
+        for (Document doc : docs) {
+            Map<String, Object> meta = doc.getMetadata();
+            if (meta == null) continue;
+            String scope = stringValue(meta.get("scope"));
+            if (scopeFilter != null && !scopeFilter.equals(scope)) continue;
+            String content = doc.getContent();
+            if (content == null || content.isBlank()) continue;
+            merged.putIfAbsent(content, new SearchResult(content,
+                    buildSourceLabel(scope, stringValue(meta.get("file_name"))), meta));
         }
 
-        // Keyword search via RediSearch
-        if (unifiedJedis != null) {
-            try {
-                String escapedQuery = query.replaceAll("([^a-zA-Z0-9\\u4e00-\\u9fa5])", "\\\\$1");
-                redis.clients.jedis.search.SearchResult sr = unifiedJedis.ftSearch(
-                        redisIndexName, new Query(escapedQuery).limit(0, topK * 2));
-                if (sr != null && sr.getDocuments() != null) {
-                    for (redis.clients.jedis.search.Document doc : sr.getDocuments()) {
-                        String scope = doc.getString("scope");
-                        if (scopeFilter != null && !scopeFilter.equals(scope)) continue;
-                        String content = doc.getString("content");
-                        if (content == null || content.isBlank()) continue;
-                        String source = buildSourceLabel(doc);
-                        merged.putIfAbsent(content, new SearchResult(content, source, null));
-                    }
-                }
-            } catch (Exception e) {
-                log.warn("KnowledgeSearchTool 关键词检索失败: {}", e.getMessage());
-            }
+        List<redis.clients.jedis.search.Document> keywordDocs = searchCore.keywordSearch(query, topK * 2, scopeFilter);
+        for (redis.clients.jedis.search.Document doc : keywordDocs) {
+            String scope = doc.getString("scope");
+            if (scopeFilter != null && !scopeFilter.equals(scope)) continue;
+            String content = doc.getString("content");
+            if (content == null || content.isBlank()) continue;
+            merged.putIfAbsent(content, new SearchResult(content,
+                    buildSourceLabel(scope, doc.getString("file_name")), null));
         }
 
         return merged.values().stream().limit(topK).collect(Collectors.toList());
     }
 
-    private String buildSourceLabel(Map<String, Object> meta) {
-        String scope = stringValue(meta.get("scope"));
-        String fileName = stringValue(meta.get("file_name"));
-        if (fileName != null && !fileName.isEmpty()) {
-            return (scope != null ? scope : "") + "/" + fileName;
-        }
-        return scope;
-    }
-
-    private String buildSourceLabel(redis.clients.jedis.search.Document doc) {
-        String scope = doc.getString("scope");
-        String fileName = doc.getString("file_name");
+    private String buildSourceLabel(String scope, String fileName) {
         if (fileName != null && !fileName.isEmpty()) {
             return (scope != null ? scope : "") + "/" + fileName;
         }

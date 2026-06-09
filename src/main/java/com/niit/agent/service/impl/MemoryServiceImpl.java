@@ -20,16 +20,12 @@ import com.niit.agent.entity.ChatAttachment;
 import com.niit.agent.service.ChatAttachmentService;
 import com.niit.agent.service.ChatMessageService;
 import com.niit.agent.service.ChatSessionService;
+import com.niit.agent.service.KnowledgeSearchCore;
 import com.niit.agent.service.MemoryService;
 import com.niit.agent.service.RerankService;
 import com.niit.agent.service.TokenService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
-import org.springframework.ai.vectorstore.SearchRequest;
-import org.springframework.ai.vectorstore.VectorStore;
-import redis.clients.jedis.UnifiedJedis;
-import redis.clients.jedis.search.SearchResult;
-import redis.clients.jedis.search.Query;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
@@ -57,7 +53,7 @@ public class MemoryServiceImpl implements MemoryService {
     private final AiModelRouterService aiModelRouterService;
     private final AppSkillService appSkillService;
     private final ChatSessionService chatSessionService;
-    private final VectorStore vectorStore;
+    private final KnowledgeSearchCore knowledgeSearchCore;
     private final TokenService tokenService;
     private final ExecutorService ragExecutor;
     private final ExecutorService summaryExecutor;
@@ -78,12 +74,6 @@ public class MemoryServiceImpl implements MemoryService {
 
     @Autowired(required = false)
     private RerankService rerankService;
-    
-    @Autowired(required = false)
-    private UnifiedJedis unifiedJedis;
-    
-    @Value("${spring.ai.vectorstore.redis.index:vector_index}")
-    private String redisIndexName;
 
     @Value("${ai.context.max-rounds:8}")
     private int maxContextRounds;
@@ -196,7 +186,7 @@ public class MemoryServiceImpl implements MemoryService {
             AiModelRouterService aiModelRouterService,
             AppSkillService appSkillService,
             ChatSessionService chatSessionService,
-            VectorStore vectorStore,
+            KnowledgeSearchCore knowledgeSearchCore,
             TokenService tokenService,
             @Qualifier("ragExecutor") ExecutorService ragExecutor,
             @Qualifier("summaryExecutor") ExecutorService summaryExecutor) {
@@ -208,7 +198,7 @@ public class MemoryServiceImpl implements MemoryService {
         this.aiModelRouterService = aiModelRouterService;
         this.appSkillService = appSkillService;
         this.chatSessionService = chatSessionService;
-        this.vectorStore = vectorStore;
+        this.knowledgeSearchCore = knowledgeSearchCore;
         this.tokenService = tokenService;
         this.ragExecutor = ragExecutor;
         this.summaryExecutor = summaryExecutor;
@@ -704,45 +694,34 @@ public class MemoryServiceImpl implements MemoryService {
                                                           int vectorQuota, int sessionQuota, int userQuota, int globalQuota) {
         Map<String, RetrievalCandidate> mergedCandidates = new LinkedHashMap<>();
         for (String retrievalQuery : retrievalQueries) {
-            try {
-                List<Document> similarDocs = vectorStore.similaritySearch(
-                        SearchRequest.query(retrievalQuery).withTopK(ragVectorSearchTopK)
-                );
-                if (similarDocs == null || similarDocs.isEmpty()) {
-                    continue;
-                }
-
-                List<RetrievalCandidate> scopedCandidates = similarDocs.stream()
-                        .map(doc -> toVectorCandidate(doc, session))
-                        .filter(Objects::nonNull)
-                        .filter(candidate -> candidate.content() != null && !candidate.content().isBlank())
-                        .toList();
-                mergeCandidates(mergedCandidates, scopedCandidates);
-            } catch (Exception e) {
-                log.warn("向量检索失败, query={}, error={}", RetrievalUtil.summarizeQuestion(retrievalQuery), e.getMessage());
+            List<Document> similarDocs = knowledgeSearchCore.vectorSearch(retrievalQuery, ragVectorSearchTopK);
+            if (similarDocs.isEmpty()) {
+                continue;
             }
+
+            List<RetrievalCandidate> scopedCandidates = similarDocs.stream()
+                    .map(doc -> toVectorCandidate(doc, session))
+                    .filter(Objects::nonNull)
+                    .filter(candidate -> candidate.content() != null && !candidate.content().isBlank())
+                    .toList();
+            mergeCandidates(mergedCandidates, scopedCandidates);
         }
         return prioritizeScopedCandidates(new ArrayList<>(mergedCandidates.values()), vectorQuota, sessionQuota, userQuota, globalQuota);
     }
 
     private List<RetrievalCandidate> searchKeywordKnowledge(List<String> retrievalQueries, ChatSession session,
                                                            int keywordQuota, int sessionQuota, int userQuota, int globalQuota) {
-        if (unifiedJedis == null) {
-            return Collections.emptyList();
-        }
-
         Map<String, RetrievalCandidate> mergedCandidates = new LinkedHashMap<>();
         for (String retrievalQuery : retrievalQueries) {
-            try {
-                String escapedQuery = retrievalQuery.replaceAll("([^a-zA-Z0-9\\u4e00-\\u9fa5])", "\\\\$1");
-                Query query = new Query(escapedQuery).limit(0, 20);
-                SearchResult searchResult = unifiedJedis.ftSearch(redisIndexName, query);
-                if (searchResult == null || searchResult.getDocuments() == null) {
-                    continue;
-                }
+            List<redis.clients.jedis.search.Document> keywordDocs =
+                    knowledgeSearchCore.keywordSearch(retrievalQuery, 20, null);
+            if (keywordDocs.isEmpty()) {
+                continue;
+            }
 
-                List<RetrievalCandidate> contents = new ArrayList<>();
-                for (redis.clients.jedis.search.Document doc : searchResult.getDocuments()) {
+            List<RetrievalCandidate> contents = new ArrayList<>();
+            try {
+                for (redis.clients.jedis.search.Document doc : keywordDocs) {
                     String content = doc.getString("content");
                     if (content == null || content.isBlank()) {
                         continue;

@@ -23,9 +23,9 @@ public interface AiModelRouterService {
 
     Map<String, Object> getRuntimeMetrics();
 
-    record ChatOptions(boolean toolsEnabled, TaskLane taskLane) {
-        public static final ChatOptions DEFAULT = new ChatOptions(true, TaskLane.PRIMARY);
-        public static final ChatOptions AUXILIARY_NO_TOOLS = new ChatOptions(false, TaskLane.AUXILIARY);
+    record ChatOptions(boolean toolsEnabled, TaskLane taskLane, String userApiKey) {
+        public static final ChatOptions DEFAULT = new ChatOptions(true, TaskLane.PRIMARY, null);
+        public static final ChatOptions AUXILIARY_NO_TOOLS = new ChatOptions(false, TaskLane.AUXILIARY, null);
     }
 
     enum TaskLane {

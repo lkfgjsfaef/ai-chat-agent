@@ -2,6 +2,7 @@ package com.niit.agent.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.niit.agent.common.util.ApiKeyEncryptor;
 import com.niit.agent.common.util.JwtUtil;
 import com.niit.agent.entity.User;
 import com.niit.agent.mapper.UserMapper;
@@ -36,6 +37,9 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
 
     private static final java.util.regex.Pattern MD5_PATTERN =
             java.util.regex.Pattern.compile("^[a-fA-F0-9]{32}$");
+
+    @Value("${app.api-key.secret:dev-secret-change-in-prod}")
+    private String apiKeySecret;
 
     @Value("${app.upload.avatar-dir:${user.dir}/uploads/avatars/}")
     private String uploadDir;
@@ -130,6 +134,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         }
         UserProfileVO vo = new UserProfileVO();
         BeanUtils.copyProperties(user, vo);
+        vo.setHasApiKey(user.getEncryptedApiKey() != null && !user.getEncryptedApiKey().isBlank());
         return vo;
     }
 
@@ -172,6 +177,42 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         } catch (IOException e) {
             throw new RuntimeException("上传头像失败", e);
         }
+    }
+
+    private ApiKeyEncryptor apiKeyEncryptor() {
+        return new ApiKeyEncryptor(apiKeySecret);
+    }
+
+    @Override
+    public void saveApiKey(Long userId, String rawApiKey) {
+        if (rawApiKey == null || rawApiKey.isBlank()) {
+            throw new RuntimeException("API Key 不能为空");
+        }
+        User user = userMapper.selectById(userId);
+        if (user == null) {
+            throw new RuntimeException("用户不存在");
+        }
+        user.setEncryptedApiKey(apiKeyEncryptor().encrypt(rawApiKey));
+        userMapper.updateById(user);
+    }
+
+    @Override
+    public void deleteApiKey(Long userId) {
+        User user = userMapper.selectById(userId);
+        if (user == null) {
+            throw new RuntimeException("用户不存在");
+        }
+        user.setEncryptedApiKey(null);
+        userMapper.updateById(user);
+    }
+
+    @Override
+    public String getDecryptedApiKey(Long userId) {
+        User user = userMapper.selectById(userId);
+        if (user == null || user.getEncryptedApiKey() == null || user.getEncryptedApiKey().isBlank()) {
+            return null;
+        }
+        return apiKeyEncryptor().decrypt(user.getEncryptedApiKey());
     }
 
     @Override

@@ -23,4 +23,10 @@ public interface UserService extends IService<User> {
     String updateAvatar(Long userId, org.springframework.web.multipart.MultipartFile file);
 
     void incrementTokenUsage(Long userId, int tokens);
+
+    void saveApiKey(Long userId, String rawApiKey);
+
+    void deleteApiKey(Long userId);
+
+    String getDecryptedApiKey(Long userId);
 }

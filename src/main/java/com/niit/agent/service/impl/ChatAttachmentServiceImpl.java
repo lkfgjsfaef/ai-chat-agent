@@ -10,6 +10,8 @@ import com.niit.agent.mapper.ChatAttachmentMapper;
 import com.niit.agent.service.CacheService;
 import com.niit.agent.service.ChatAttachmentService;
 import com.niit.agent.service.ChatSessionService;
+import com.niit.agent.service.cleaning.MarkdownTableExtractor;
+import com.niit.agent.service.cleaning.TextCleaningPipeline;
 import com.niit.agent.vo.KnowledgeAttachmentPageVO;
 import com.niit.agent.vo.KnowledgeAttachmentVO;
 import lombok.RequiredArgsConstructor;
@@ -79,6 +81,8 @@ public class ChatAttachmentServiceImpl extends ServiceImpl<ChatAttachmentMapper,
     private final VectorStore vectorStore;
     private final ChatSessionService chatSessionService;
     private final CacheService cacheService;
+    private final TextCleaningPipeline cleaningPipeline;
+    private final MarkdownTableExtractor tableExtractor = new MarkdownTableExtractor();
     private final Tika tika = new Tika();
 
     @Override
@@ -114,16 +118,14 @@ public class ChatAttachmentServiceImpl extends ServiceImpl<ChatAttachmentMapper,
         try {
             extractedText = tika.parseToString(filePath.toFile());
             if (extractedText != null && !extractedText.trim().isEmpty()) {
-                // Remove null characters (\u0000) that can break JSON parsing
-                extractedText = extractedText.replace("\u0000", "");
-                vectorizableText = extractedText;
-
-                // We no longer need to store the full text in DB or return it to frontend, 
-                // just a short preview is enough.
-                if (extractedText.length() > 500) {
-                    extractedText = extractedText.substring(0, 500) + "\n...[文档内容已保存至知识库，可直接提问]";
+                log.info("Tika 解析完成: 文件名={}, 原始文本长度={}", originalFilename, extractedText.length());
+                String cleaned = cleaningPipeline.clean(extractedText);
+                vectorizableText = cleaned;
+                log.info("清洗后文本长度={}", cleaned.length());
+                if (cleaned.length() > 500) {
+                    extractedText = cleaned.substring(0, 500) + "\n...[文档内容已保存至知识库，可直接提问]";
                 } else {
-                    extractedText = extractedText + "\n\n[文档内容已保存至知识库，可直接提问]";
+                    extractedText = cleaned + "\n\n[文档内容已保存至知识库，可直接提问]";
                 }
             }
         } catch (Exception e) {
@@ -349,8 +351,8 @@ public class ChatAttachmentServiceImpl extends ServiceImpl<ChatAttachmentMapper,
         }
         try {
             String text = tika.parseToString(filePath.toFile());
-            if (text != null) {
-                text = text.replace(" ", "");
+            if (text != null && !text.isEmpty()) {
+                text = cleaningPipeline.clean(text);
             }
             return text != null ? text : "";
         } catch (Exception e) {
@@ -618,12 +620,24 @@ public class ChatAttachmentServiceImpl extends ServiceImpl<ChatAttachmentMapper,
     private List<Document> buildStructuredDocuments(ChatAttachment attachment, String extractedText) {
         Map<String, Object> baseMetadata = buildBaseMetadata(attachment);
         String rootSourceName = resolveRootSourceName(attachment.getFileName());
-        List<StructuredChunk> structuredChunks = splitByDocumentStructure(extractedText, rootSourceName);
-        if (structuredChunks.isEmpty()) {
-            structuredChunks = splitByParagraphWindows(extractedText, rootSourceName);
+
+        // 表格自包含展开：正文中的表格替换为占位符，避免重复分块
+        MarkdownTableExtractor.TableExtractionResult tableResult = tableExtractor.extract(extractedText);
+        List<Document> documents = new ArrayList<>();
+        for (MarkdownTableExtractor.TableChunk chunk : tableResult.tableChunks()) {
+            Map<String, Object> tableMetadata = new HashMap<>(baseMetadata);
+            tableMetadata.put("source_path", rootSourceName + " > " + chunk.tableLabel());
+            tableMetadata.put("section_title", chunk.section());
+            documents.add(new Document(chunk.content(), tableMetadata));
         }
 
-        List<Document> documents = new ArrayList<>();
+        // 正文使用清洗后的版本（表格已替换为占位符），避免表格内容被重复分块
+        String bodyText = tableResult.cleanedText();
+        List<StructuredChunk> structuredChunks = splitByDocumentStructure(bodyText, rootSourceName);
+        if (structuredChunks.isEmpty()) {
+            structuredChunks = splitByParagraphWindows(bodyText, rootSourceName);
+        }
+
         for (StructuredChunk chunk : structuredChunks) {
             documents.addAll(toDocuments(chunk, baseMetadata));
         }
@@ -631,7 +645,7 @@ public class ChatAttachmentServiceImpl extends ServiceImpl<ChatAttachmentMapper,
             Map<String, Object> fallbackMetadata = new HashMap<>(baseMetadata);
             fallbackMetadata.put("source_path", rootSourceName + " > 语义片段1");
             fallbackMetadata.put("section_title", "语义片段1");
-            documents.addAll(splitContentSemantically(extractedText, fallbackMetadata, rootSourceName + " > 语义片段1", "语义片段1"));
+            documents.addAll(splitContentSemantically(bodyText, fallbackMetadata, rootSourceName + " > 语义片段1", "语义片段1"));
         }
         log.info("应用结构化 RAG 分块策略: rootSource={}, chunkCount={}", rootSourceName, documents.size());
         return documents;
@@ -946,9 +960,10 @@ public class ChatAttachmentServiceImpl extends ServiceImpl<ChatAttachmentMapper,
         if (extractedText == null) {
             return "";
         }
-        return extractedText.replace("\r\n", "\n")
+        // 先执行清洗管线（去控制字符、BOM等），再做换行规范化
+        String cleaned = cleaningPipeline.clean(extractedText);
+        return cleaned.replace("\r\n", "\n")
                 .replace('\r', '\n')
-                .replaceAll("\\u0000", "")
                 .replaceAll("\\n{3,}", "\n\n")
                 .trim();
     }

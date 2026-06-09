@@ -1,10 +1,12 @@
 package com.niit.agent.service.tools;
 
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.ConnectionPool;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
@@ -21,11 +23,19 @@ import java.util.regex.Pattern;
 @ConditionalOnProperty(name = "ai.tools.web-search.enabled", havingValue = "true")
 public class WebSearchTool implements ToolHandler {
 
-    private final OkHttpClient client = new OkHttpClient.Builder()
-            .connectTimeout(8, TimeUnit.SECONDS)
-            .readTimeout(12, TimeUnit.SECONDS)
-            .connectionPool(new ConnectionPool(10, 3, TimeUnit.MINUTES))
-            .build();
+    @Autowired
+    private ConnectionPool connectionPool;
+
+    private OkHttpClient client;
+
+    @PostConstruct
+    public void initClient() {
+        this.client = new OkHttpClient.Builder()
+                .connectTimeout(8, TimeUnit.SECONDS)
+                .readTimeout(12, TimeUnit.SECONDS)
+                .connectionPool(connectionPool)
+                .build();
+    }
 
     private static final Pattern LINK_PATTERN = Pattern.compile(
             "<a[^>]*class=\"result-link[^\"]*\"[^>]*href=\"([^\"]+)\"[^>]*>([^<]+)</a>",

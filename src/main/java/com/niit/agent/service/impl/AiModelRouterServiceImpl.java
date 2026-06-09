@@ -191,7 +191,8 @@ public class AiModelRouterServiceImpl implements AiModelRouterService {
 
         log.info("尝试使用模型: {}", currentModelName);
         long modelCallStart = System.currentTimeMillis();
-        return model.streamChat(messages, currentModelName, new AiModel.ChatOptions(options.toolsEnabled()))
+        return model.streamChat(messages, currentModelName,
+                        new AiModel.ChatOptions(options.toolsEnabled(), options.userApiKey()))
                 .transformDeferred(CircuitBreakerOperator.of(circuitBreaker))
                 .doOnComplete(() -> {
                     long elapsed = System.currentTimeMillis() - modelCallStart;
