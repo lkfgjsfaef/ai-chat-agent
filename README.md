@@ -395,7 +395,7 @@ npm run dev
 
 访问 `http://localhost:5173`。
 
----
+---a
 
 ## 项目架构
 
@@ -422,6 +422,9 @@ npm run dev
 | Token 计算 | JTokkit |
 | 文档解析 | Apache Tika |
 | 前端 | Vue 3 + TypeScript + Element Plus + Vite |
+
 ![img.png](image.png)
+
 ![img_1.png](image_1.png)
+
 ![img_2.png](image_2.png)
