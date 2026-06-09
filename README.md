@@ -423,8 +423,9 @@ npm run dev
 | 文档解析 | Apache Tika |
 | 前端 | Vue 3 + TypeScript + Element Plus + Vite |
 
-![img.png](image.png)
+![image.png](image.png)
 
-![img_1.png](image_1.png)
+![image_1.png](image_1.png)
 
-![img_2.png](image_2.png)
+![image_2.png](image_2.png)
+
